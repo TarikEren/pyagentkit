@@ -1,0 +1,25 @@
+[project]
+name = "ollama_agentkit"
+version = "0.1.0"
+description = "Agent toolkit for Ollama"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["ollama>=0.6.1", "pydantic>=2.12.5"]
+authors = [{ name = "Tarık Eren Tosun", email = "tarikerentosun@outlook.com" }]
+maintainers = [
+    { name = "Tarık Eren Tosun", email = "tarikerentosun@outlook.com" },
+]
+keywords = ["ollama", "ai", "agent", "agentic"]
+license = "APACHE-2.0"
+license-files = ["LICEN[CS]E*"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+[project.urls]
+Homepage = "https://github.com/TarikEren/pyagentkit"
+Issues = "https://github.com/TarikEren/pyagentkit/issues"
+
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
