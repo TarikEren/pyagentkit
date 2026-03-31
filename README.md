@@ -42,16 +42,16 @@ agent = Agent(
 @agent.register_tool
 def add_tool(n1: int, n2: int):
     """Adds two numbers""" # All tooling must have a one-liner docstring that defines what the function does
+    # Every tool must return a `ToolResult` object
     return ToolResult(
-        return_value=ToolReturnValue.success, content=f"Result: {n1 + n2}"
+        return_value=ToolReturnValue.success,     # Status of the return | Can be either success, error or fatal.
+                                                  # Affects how the tool call is processed.
+        content=f"Result: {n1 + n2}"              # The part which the agent will read
     )
 
 # Messages get printed during the response handling
 result = agent.handle_response(prompt="What is 2 + 2")
 print(result.sum_result)
-
-# You can access the CustomOutput value afterwards
-print(output.response.sum)
 
 ```
 
