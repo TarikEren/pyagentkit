@@ -28,7 +28,7 @@ from ollama_agentkit import Agent, tool, AgentResponse
 
 # Custom output class to manipulate LLM output
 class CustomOutput(AgentResponse):
-    sum: int
+    sum_result: int
 
 agent = Agent(
     # Works with any LLM's locally downloaded in your ollama server
@@ -38,13 +38,17 @@ agent = Agent(
     response_model=CustomOutput
 )
 
+# Easy to define tooling with decorator `register_tool`
 @agent.register_tool
-def add(a: int, b: int) -> int:
-    """Add two integers."""
-    return a + b
+def add_tool(n1: int, n2: int):
+    """Adds two numbers""" # All tooling must have a one-liner docstring that defines what the function does
+    return ToolResult(
+        return_value=ToolReturnValue.success, content=f"Result: {n1 + n2}"
+    )
 
 # Messages get printed during the response handling
-output = agent.handle_response("What is 12 + 30?")
+result = agent.handle_response(prompt="What is 2 + 2")
+print(result.sum_result)
 
 # You can access the CustomOutput value afterwards
 print(output.response.sum)
