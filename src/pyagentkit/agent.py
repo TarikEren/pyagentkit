@@ -141,7 +141,10 @@ class Agent(Generic[T]):
         """Gets the tooling data for the system prompt"""
         result = "## Tools At Your Disposal"
         for _, value in self.tool_registry.items():
-            result += f"\n- {value.name} {value.signature} | Description: {value.desc}"
+            sig = inspect.signature(value.function)
+            params = {k: v for k, v in sig.parameters.items() if k != value.deps_param}
+            clean_sig = f"({', '.join(str(p) for p in params.values())})"
+            result += f"\n- {value.name} {clean_sig} | Description: {value.desc}"
         return result
 
     def __init__(
@@ -178,9 +181,21 @@ class Agent(Generic[T]):
             raise RuntimeError(f"Tool `{name}` has no docstring")
 
         signature = inspect.signature(tool)
+        params = list(signature.parameters.values())
+        need_deps = (
+            len(params) > 0
+            and params[0].annotation is not inspect.Parameter.empty
+            and isinstance(params[0].annotation, type)
+            and issubclass(params[0].annotation, AgentDependencies)
+        )
 
         cls.tool_registry[name] = RegisteredTool(
-            name=name, signature=str(signature), function=tool, desc=tool.__doc__
+            name=name,
+            signature=str(signature),
+            function=tool,
+            desc=tool.__doc__,
+            need_deps=need_deps,
+            deps_param=params[0].name if need_deps else None,
         )
         return tool
 
@@ -201,20 +216,6 @@ class Agent(Generic[T]):
             result += f"\nError message: {error['msg']}"
         result += "\nCRITICAL: Fix the errors and respond ONLY with valid JSON. Make sure you close out your curly braces ('{'). Do NOT include any markdown formatting."
         return result
-
-    def _get_tool_from_registry(self, func_name: str) -> TypeTool | None:
-        """
-        Checks the tool registry list and finds if there's a matching tool to the given
-        tool name
-        Args:
-            func_name (str): Name of the tool to search for
-        Returns:
-            (TypeTool | None): The tool itself or None
-        """
-        # Check if the tool is in the registry
-        entry = self.tool_registry.get(func_name)
-        if entry is not None:
-            return entry.function
 
     def _strip_markdown_formatting(self, message: str) -> str:
         """
@@ -245,7 +246,7 @@ class Agent(Generic[T]):
             tool_name = tool_call.name
             tool_params = tool_call.params
             # Find if there is such tool registered
-            accepted_tool = self._get_tool_from_registry(tool_name)
+            accepted_tool = self.tool_registry.get(tool_name)
             if accepted_tool is None:
                 raise ToolExceptionError(
                     f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
@@ -269,9 +270,19 @@ class Agent(Generic[T]):
 
             # Handle tool arguments
             kwargs = {p.name: p.value for p in tool_params}
+            if accepted_tool.need_deps:
+                if self.current_deps is None:
+                    raise ToolExceptionFatal(
+                        f"Tool `{tool_name}` requires dependencies but none were provided to handle_response"
+                    )
+                if accepted_tool.deps_param is None:
+                    raise ToolExceptionFatal(
+                        f"Registration Error (Tool `{tool_name}` requires dependencies but has none)"
+                    )
+                kwargs[accepted_tool.deps_param] = self.current_deps
 
             # Validate kwargs against the actual function signature
-            sig = inspect.signature(accepted_tool)
+            sig = inspect.signature(accepted_tool.function)
             valid_params = set(sig.parameters.keys())
             provided_params = set(kwargs.keys())
 
@@ -302,7 +313,7 @@ class Agent(Generic[T]):
 
             # Call tool and get return value
             try:
-                tool_return = accepted_tool(**kwargs)
+                tool_return = accepted_tool.function(**kwargs)
             except TypeError as exc:
                 print(
                     f"[ERROR]: Called tool `{tool_name}` with invalid arguments `{kwargs}`"
@@ -339,7 +350,7 @@ If task is done, generate `final` response and stop.""",
             f"[FATAL]: Agent {self.agent_name} has failed to generate successful tool call in {self.tool_retries} tries"
         )
 
-    def handle_response(self, prompt: str) -> T:
+    def handle_response(self, prompt: str, deps: AgentDependencies | None = None) -> T:
         response_try = 0
         # Send prompt to agent
         # print(f"[DEBUG]: System prompt: {self.message_history[0]}")
@@ -359,10 +370,11 @@ If task is done, generate `final` response and stop.""",
 - ONLY use paths that are in the format of `./target/path` or `target/path`
 - DO NOT USE ANY NON-EXISTING TOOLS. DON'T MAKE UP TOOL NAMES.
 """
-        self.message_history.append({"role": "system", "content": self.system_prompt})
-        self.message_history.append(
+        self.current_deps = deps
+        self.message_history = [
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": prompt},
-        )
+        ]
         while response_try < self.response_retries:
             # print(f"[DEBUG]: Last Message: {self.message_history[-1]}")
             # print(f"[DEBUG]: Response Try: {response_try}, Tool Try: {self.tool_try}")
