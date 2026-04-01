@@ -13,6 +13,8 @@ from .exceptions import (
     ToolExceptionFatal,
 )
 
+from .helpers import configure_logging
+
 __all__ = [
     "Agent",
     "ToolResult",
@@ -24,4 +26,5 @@ __all__ = [
     "AgentExceptionFatal",
     "ToolExceptionError",
     "ToolExceptionFatal",
+    "configure_logging",
 ]
