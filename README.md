@@ -15,7 +15,7 @@ Lightweight library for creating tool-enabled AI agents using Ollama. Including 
 - Schema validation for tool inputs
 - Structured and validated agent responses
 
-## Installation (Not in PyPI yet)
+## Installation
 
 ```bash
 pip install pyagentkit
