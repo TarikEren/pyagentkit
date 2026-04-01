@@ -75,6 +75,8 @@ class RegisteredTool(BaseModel):
     signature: str
     desc: str
     function: TypeTool
+    need_deps: bool = False
+    deps_param: str | None = None
 
 
 class RegisteredCommand(BaseModel):
