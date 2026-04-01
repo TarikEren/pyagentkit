@@ -177,11 +177,10 @@ class Agent(Generic[T]):
         if tool.__doc__ is None:
             raise RuntimeError(f"Tool `{name}` has no docstring")
 
-        desc = tool.__doc__.splitlines()[0]
         signature = inspect.signature(tool)
 
         cls.tool_registry[name] = RegisteredTool(
-            name=name, signature=str(signature), function=tool, desc=desc
+            name=name, signature=str(signature), function=tool, desc=tool.__doc__
         )
         return tool
 
