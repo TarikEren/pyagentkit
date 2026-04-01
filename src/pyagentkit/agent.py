@@ -33,7 +33,7 @@ from .exceptions import (
 
 T = TypeVar("T", bound=AgentResponse)
 
-logger = logging.Logger("pyagentkit")
+logger = logging.getLogger("pyagentkit")
 
 
 class Agent(Generic[T]):
@@ -450,7 +450,7 @@ If task is done, generate `final` response and stop.""",
 
                 validated = self.response_model.model_validate_json(content)
 
-                logging.info("[%s]: %s", self.agent_name, validated.message)
+                logger.info("[%s]: %s", self.agent_name, validated.message)
                 self._validate_agent_logic(response=validated)
                 if validated.response.type == "final":
                     return validated
