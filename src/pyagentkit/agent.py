@@ -36,7 +36,7 @@ T = TypeVar("T", bound=AgentResponse)
 class Agent(Generic[T]):
     """Allows easier agent creation"""
 
-    system_prompt: str
+    base_system_prompt: str
     llm_name: str
     response_model: Type[T]
     instructions: str | None
@@ -44,10 +44,34 @@ class Agent(Generic[T]):
     message_history: list[dict[str, str]]
     tool_retries: int
     response_retries: int
-    tool_registry: ClassVar[dict[str, RegisteredTool]] = {}
+    class_tools: ClassVar[dict[str, RegisteredTool]] = {}
+    instance_tools: dict[str, RegisteredTool]
     tool_try: int = 0
     dependencies: Type[AgentDependencies]
     num_ctx: int
+    ollama_client: ollama.Client
+
+    def _verify_ollama_environment(self) -> None:
+        """
+        Checks if the Ollama server is reachable and if the llm is downloaded.
+        """
+        try:
+            # A simple request like list local models is a good way to verify connection
+            model_list = self.ollama_client.list()
+            models = []
+            for entry in model_list.get("models"):
+                models.append(entry.get("model"))
+            if self.llm_name not in models:
+                raise RuntimeError(
+                    f"Model {self.llm_name} not found locally",
+                    f"Run `ollama pull {self.llm_name}` to install `{self.llm_name}`",
+                )
+
+        except ConnectionError as e:
+            raise RuntimeError(
+                f"Failed connecting to Ollama: {e}.",
+                "Please ensure Ollama is running and the host address is correct",
+            )
 
     def _build_schema_prompt(self) -> str:
         """
@@ -140,44 +164,20 @@ class Agent(Generic[T]):
     def _get_tools(self):
         """Gets the tooling data for the system prompt"""
         result = "## Tools At Your Disposal"
-        for _, value in self.tool_registry.items():
+        all_tools = {**self.instance_tools, **self.class_tools}
+        for _, value in all_tools.items():
             sig = inspect.signature(value.function)
             params = {k: v for k, v in sig.parameters.items() if k != value.deps_param}
             clean_sig = f"({', '.join(str(p) for p in params.values())})"
             result += f"\n- {value.name} {clean_sig} | Description: {value.desc}"
         return result
 
-    def __init__(
-        self,
-        llm_name: str,
-        tool_retries: int = 3,
-        response_retries: int = 3,
-        system_prompt: str | None = "",
-        instructions: str | None = "",
-        agent_name: str | None = None,
-        response_model: Type[T] = AgentResponse,
-        num_ctx: int = 8192,
-    ):
-        self.system_prompt = system_prompt or ""
-        self.llm_name = llm_name
-        self.response_model = response_model
-        self.instructions = instructions or ""
-        self.agent_name = agent_name or self.llm_name
-        self.tool_retries = tool_retries
-        self.response_retries = response_retries
-        self.message_history = []
-        self.num_ctx = num_ctx
-
-    def __init_subclass__(cls, **kwargs) -> None:
-        super().__init_subclass__(**kwargs)
-        cls.tool_registry = {}
-
-    @classmethod
-    def register_tool(cls, tool: TypeTool):
-        """Decorator: Adds a tool to the tool_registry list"""
+    @staticmethod
+    def _parse_tool(tool: TypeTool) -> RegisteredTool:
+        """Helper for parsing tools"""
         name = tool.__name__
-
-        if tool.__doc__ is None:
+        doc = tool.__doc__
+        if doc is None:
             raise RuntimeError(f"Tool `{name}` has no docstring")
 
         signature = inspect.signature(tool)
@@ -189,15 +189,61 @@ class Agent(Generic[T]):
             and issubclass(params[0].annotation, AgentDependencies)
         )
 
-        cls.tool_registry[name] = RegisteredTool(
+        return RegisteredTool(
             name=name,
             signature=str(signature),
             function=tool,
-            desc=tool.__doc__,
+            desc=doc,
             need_deps=need_deps,
             deps_param=params[0].name if need_deps else None,
         )
+
+    def _add_tool(self, tool: TypeTool) -> None:
+        new_tool = self._parse_tool(tool)
+        self.instance_tools[new_tool.name] = new_tool
+
+    @classmethod
+    def register_tool(cls, tool: TypeTool):
+        """Decorator: Adds a class-wide tool"""
+        new_tool = Agent._parse_tool(tool)
+        cls.class_tools[new_tool.name] = new_tool
         return tool
+
+    def __init__(
+        self,
+        llm_name: str,
+        tool_retries: int = 3,
+        response_retries: int = 3,
+        system_prompt: str | None = "",
+        instructions: str | None = "",
+        agent_name: str | None = None,
+        response_model: Type[T] = AgentResponse,
+        num_ctx: int = 8192,
+        ollama_url: str | None = None,
+        tools: list[TypeTool] | None = None,
+    ):
+        self.base_system_prompt = system_prompt or ""
+        self.llm_name = llm_name
+        self.response_model = response_model
+        self.instructions = instructions or ""
+        self.agent_name = agent_name or self.llm_name
+        self.tool_retries = tool_retries
+        self.response_retries = response_retries
+        self.message_history = []
+        self.num_ctx = num_ctx
+        self.instance_tools = {}
+        self.ollama_url = ollama_url
+        self.ollama_client = (
+            ollama.Client(host=self.ollama_url) if ollama_url else ollama.Client()
+        )
+        self._verify_ollama_environment()
+        if tools:
+            for tool in tools:
+                self._add_tool(tool)
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        cls.class_tools = {}
 
     def _print_validation_errors(self, errors: list[ErrorDetails]) -> str:
         """
@@ -242,11 +288,12 @@ class Agent(Generic[T]):
         pass
 
     def _handle_tool_call(self, tool_call: tool_call_schema) -> None:
+        all_tools = {**self.class_tools, **self.instance_tools}
         while self.tool_try < self.tool_retries:
             tool_name = tool_call.name
             tool_params = tool_call.params
             # Find if there is such tool registered
-            accepted_tool = self.tool_registry.get(tool_name)
+            accepted_tool = all_tools.get(tool_name)
             if accepted_tool is None:
                 raise ToolExceptionError(
                     f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
@@ -354,7 +401,7 @@ If task is done, generate `final` response and stop.""",
         response_try = 0
         # Send prompt to agent
         # print(f"[DEBUG]: System prompt: {self.message_history[0]}")
-        self.system_prompt = f"""{self.system_prompt}
+        compiled_system_prompt = f"""{self.base_system_prompt}
 
 {self._build_schema_prompt()}
 
@@ -371,15 +418,18 @@ If task is done, generate `final` response and stop.""",
 - DO NOT USE ANY NON-EXISTING TOOLS. DON'T MAKE UP TOOL NAMES.
 """
         self.current_deps = deps
-        self.message_history = [
-            {"role": "system", "content": self.system_prompt},
+        if len(self.message_history) == 0:
+            self.message_history.append(
+                {"role": "system", "content": compiled_system_prompt}
+            )
+        self.message_history.append(
             {"role": "user", "content": prompt},
-        ]
+        )
         while response_try < self.response_retries:
             # print(f"[DEBUG]: Last Message: {self.message_history[-1]}")
             # print(f"[DEBUG]: Response Try: {response_try}, Tool Try: {self.tool_try}")
             try:
-                response = ollama.chat(
+                response = self.ollama_client.chat(
                     model=self.llm_name,
                     messages=self.message_history,
                     options={"num_ctx": self.num_ctx},
