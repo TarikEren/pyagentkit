@@ -1,10 +1,13 @@
 [project]
-name = "ollama_agentkit"
+name = "pyagentkit"
 version = "0.1.0"
 description = "Agent toolkit for Ollama"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["ollama>=0.6.1", "pydantic>=2.12.5"]
+dependencies = [
+    "ollama>=0.6.1",
+    "pydantic>=2.12.5",
+]
 authors = [{ name = "Tarık Eren Tosun", email = "tarikerentosun@outlook.com" }]
 maintainers = [
     { name = "Tarık Eren Tosun", email = "tarikerentosun@outlook.com" },
