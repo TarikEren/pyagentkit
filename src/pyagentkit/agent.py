@@ -32,8 +32,8 @@ from .exceptions import (
 )
 
 T = TypeVar("T", bound=AgentResponse)
+
 logger = logging.Logger("pyagentkit")
-logging.getLogger("pyagentkit").addHandler(logging.NullHandler())
 
 
 class Agent(Generic[T]):
