@@ -1,8 +1,8 @@
 ## PyAgentKit
 
-***NOTE: Currently work in progress, functionality may not work as intended***
-
 Lightweight library for creating tool-enabled AI agents using Ollama. Including the ones that do not have tool calling capabilities.
+
+- Refer to [USAGE.md](./USAGE.md) for usage details.
 
 ## Why this exists
 
@@ -60,7 +60,7 @@ print(result.sum_result)
 - Model-agnostic where possible
 - Strict validation
 - Clear separation of agent logic and application logic
-  
+
 ## Limitations
 - Tool reliability depends on prompt and model instruction-following quality
 - Some models may need stronger prompting
