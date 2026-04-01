@@ -24,7 +24,10 @@ pip install pyagentkit
 ## Example
 
 ```python
-from ollama_agentkit import Agent, tool, AgentResponse
+from ollama_agentkit import Agent, tool, AgentResponse, configure_logging
+
+# For configuring agent logging
+configure_logging()
 
 # Custom output class to manipulate LLM output
 class CustomOutput(AgentResponse):
