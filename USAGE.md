@@ -21,19 +21,48 @@ where `llm_name` is the name of a large language model downloaded locally with O
 from pyagentkit import Agent
 from pyagentkit.definitions import AgentResponse
 
+
+# Base agent definition
+agent = Agent(llm_name="<llm_name>")
+
 # Custom output type
 class CustomOutput(AgentResponse):
     sum_result: int
 
-# Agent definition
-agent = Agent(llm_name="<llm_name>", response_model=CustomOutput)
+# Base agent definition with custom output
+agent_with_custom_output = Agent(llm_name="<llm_name>", response_model=CustomOutput)
 
 # Response handler
-response = agent.handle_response(prompt="What is 2 + 2")
+response = agent_with_custom_output.handle_response(prompt="What is 2 + 2")
 
 # The custom output field can be accessed now.
 print(f"Result: {response.sum_result}")
 
+```
+
+- Custom agent classes can be used to add more customization:
+```python
+from pyagentkit import Agent
+from pyagentkit.definitions import AgentResponse
+
+# Custom output type
+class CustomOutput(AgentResponse):
+    response_value: int
+
+# Custom agent class for more customization
+class CustomAgentClass(Agent):
+    field1: int
+    field2: str
+    ...
+
+# Custom agent definition
+customized_agent = CustomAgentClass(llm_name="", response_model=CustomOutput)
+
+# Response handler works just the same
+response = customized_agent.handle_response(prompt="Some kind of task")
+
+# So does fetching fields
+print(f"Result: {response.response_value}")
 ```
 
 ## Defining Tools
@@ -45,22 +74,30 @@ print(f"Result: {response.sum_result}")
 
 That's it.
 
+- Tools can be defined class-wide using the `register_tool` decorator or implementation-wide using `add_tool` function
+
 ### Defining Basic Tools
 
+#### Class-Wide Definition
 ```python
 from pyagentkit import Agent
 from pyagentkit.definitions import AgentResponse
 
 # Custom output type
 class CustomOutput(AgentResponse):
-    sum_result: int
+    result: int
 
-# Agent definition
-agent = Agent(llm_name="<llm_name>", response_model=CustomOutput)
+class CustomAgentClass(Agent):
+    ...
 
-# Custom tool with registration
-@agent.register_tool
-def add_tool(n1: int, n2: int):
+# Custom agent definition
+agent1 = CustomAgentClass(llm_name="<llm_name>", response_model=CustomOutput)
+
+# Class-wide tool registration
+# Every agent that uses class `CustomAgentClass` will now
+# have access to the following tool
+@Agent.register_tool
+def addition(n1: int, n2: int):
     """Adds two numbers""" # Short docstring
 
     # Generic return type for ALL tooling
@@ -69,11 +106,41 @@ def add_tool(n1: int, n2: int):
         content=f"Result: {n1 + n2}"            # This part will be `fed into` the agent to use
     )
 
-# Response handler
-response = agent.handle_response(prompt="What is 2 + 2")
+# This agent ALSO has access to the `addition` tool
+# due to class-wide registration
+agent2 = CustomAgentClass(llm_name="<llm_name>", response_model=CustomOutput)
+```
 
-# The custom output field can be accessed just like the other example.
-print(f"Result: {response.sum_result}")
+#### Instance Wide-Definition
+
+```python
+from pyagentkit import Agent
+from pyagentkit.definitions import AgentResponse
+
+# Custom output type
+class CustomOutput(AgentResponse):
+    result: int
+
+class CustomAgentClass(Agent):
+    ...
+
+# Custom agent definition
+agent1 = CustomAgentClass(llm_name="<llm_name>", response_model=CustomOutput)
+agent2 = CustomAgentClass(llm_name="<llm_name>", response_model=CustomOutput)
+
+
+# Tool definition (Notice the absence of the decorator `register_tool`)
+def subtraction(n1: int, n2: int):
+    """Subtracts one number from another"""
+
+    return ToolResult(
+        return_value=ToolReturnValue.success,
+        content=f"Result: {n1 - n2}"
+    )
+
+# Instance based tool registration
+# Only agent1 has access to the following tool
+agent1.add_tool(subtraction)
 ```
 
 #### Tool Return Values
@@ -114,10 +181,9 @@ class CustomDeps(AgentDependencies):
     db_url: str
     api_key: str
 
-deps = MyDeps(prompt="Fetch John Doe from db", db_url="...", api_key="...")
+deps = CustomDeps(prompt="Fetch John Doe from db", db_url="...", api_key="...")
 
 # Custom database access tool
-@agent.register_tool
 def fetch_from_db(deps: CustomDeps, name: str):
     """Fetches details of a person from db"""
 
@@ -129,15 +195,18 @@ def fetch_from_db(deps: CustomDeps, name: str):
         content=f"Data for `{name}` in db: {db.fetch(name)}",
     )
 
+# Instance-wide registration
+agent.add_tool(fetch_from_db)
+
 
 def main():
     # Dependencies object for the agent to use
-    deps = MyDeps(prompt="Fetch John Doe from db", db_url="...", api_key="...")
+    deps = CustomDeps(prompt="Fetch John Doe from db", db_url="...", api_key="...")
 
     # Response handler
     result = agent.handle_response(
         prompt=deps.prompt, # The prompt from the dependencies can be used
-        dependencies=deps   # The dependency object
+        deps=deps   # The dependency object
     )
 
     # The data field can be accessed just like before
