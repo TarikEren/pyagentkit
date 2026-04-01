@@ -1,5 +1,6 @@
 import re
 import json
+import logging
 import inspect
 from typing import (
     ClassVar,
@@ -31,6 +32,8 @@ from .exceptions import (
 )
 
 T = TypeVar("T", bound=AgentResponse)
+logger = logging.Logger("pyagentkit")
+logging.getLogger("pyagentkit").addHandler(logging.NullHandler())
 
 
 class Agent(Generic[T]):
@@ -298,18 +301,19 @@ class Agent(Generic[T]):
                 raise ToolExceptionError(
                     f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
                 )
-            print(
-                f"\n[Info]: Agent {self.agent_name} wants to call tool {tool_name} with params:"
+            choice = (
+                input(
+                    f"[Info] Agent {self.agent_name} wants to call tool {tool_name} with params:\n{'.'.join(param for param in tool_params)}\nAllow tool call? (Y/n): "
+                )
+                .lower()
+                .strip()
             )
-            for param in tool_params:
-                print("-", param)
-            choice = input("Allow tool call? (Y/n): ").lower().strip()
             if choice not in ["y", ""]:
-                print("[Info]: Cancelled tool call")
+                logger.info("Cancelled tool call")
                 self.message_history.append(
                     {
                         "role": "user",
-                        "content": f"Tool `{tool_name}` with params `{tool_params}` has been rejected by the user. Generate final response saying that the user has rejected the tool call",
+                        "content": f"Tool `{tool_name}` with params `{tool_params}` has been rejected by the user. Generate final response telling what the user should do in order to finish the task",
                     }
                 )
                 self.tool_try += 1
@@ -345,11 +349,11 @@ class Agent(Generic[T]):
                 parts = []
                 if unknown:
                     unknown_message = f"Unknown parameters {sorted(unknown)}"
-                    print(f"[ERROR] {unknown_message}")
+                    logger.warning("%s", unknown_message)
                     parts.append(unknown_message)
                 if missing:
                     missing_message = f"Missing required parameters: {sorted(missing)}"
-                    print(f"[ERROR] {missing_message}")
+                    logger.warning("%s", missing_message)
                     parts.append(missing_message)
                 valid_list = [
                     f"{name}: {inspect.formatannotation(p.annotation) if p.annotation is not inspect.Parameter.empty else 'any'}"
@@ -362,8 +366,10 @@ class Agent(Generic[T]):
             try:
                 tool_return = accepted_tool.function(**kwargs)
             except TypeError as exc:
-                print(
-                    f"[ERROR]: Called tool `{tool_name}` with invalid arguments `{kwargs}`"
+                logger.warning(
+                    "Called tool `%s` with invalid arguments `%s`",
+                    tool_name,
+                    kwargs,
                 )
                 raise ToolExceptionError(
                     f"Tool `{tool_name}` call failed with invalid arguments: {exc}. "
@@ -399,8 +405,6 @@ If task is done, generate `final` response and stop.""",
 
     def handle_response(self, prompt: str, deps: AgentDependencies | None = None) -> T:
         response_try = 0
-        # Send prompt to agent
-        # print(f"[DEBUG]: System prompt: {self.message_history[0]}")
         compiled_system_prompt = f"""{self.base_system_prompt}
 
 {self._build_schema_prompt()}
@@ -426,8 +430,7 @@ If task is done, generate `final` response and stop.""",
             {"role": "user", "content": prompt},
         )
         while response_try < self.response_retries:
-            # print(f"[DEBUG]: Last Message: {self.message_history[-1]}")
-            # print(f"[DEBUG]: Response Try: {response_try}, Tool Try: {self.tool_try}")
+            logger.debug("Response try: %s", response_try)
             try:
                 response = self.ollama_client.chat(
                     model=self.llm_name,
@@ -435,25 +438,19 @@ If task is done, generate `final` response and stop.""",
                     options={"num_ctx": self.num_ctx},
                 )
                 content = response.message.content
-                print(f"[DEBUG] Content:\n{content}")
                 if content is None:
                     raise RuntimeError(
                         f"Failed to get response from agent {self.agent_name}"
                     )
+                logger.debug("Content from agent %s:\n%s", self.agent_name, content)
 
                 # Append the assistant message because it doesn't know that it
                 # actually did anything
                 self.message_history.append({"role": "assistant", "content": content})
 
-                # Get rid of markdown fences because some models are stupid
-                # stripped = self._strip_markdown_formatting(message=content)
-                # print(f"[DEBUG] Stripped: {stripped}")
-                # validated = self.response_model.model_validate_json(stripped)
-
                 validated = self.response_model.model_validate_json(content)
-                # print(f"[DEBUG] Validated Response:\n{validated}\n")
-                # If the response is "done", return
-                print(f"[{self.agent_name}]: {validated.message}")
+
+                logging.info("[%s]: %s", self.agent_name, validated.message)
                 self._validate_agent_logic(response=validated)
                 if validated.response.type == "final":
                     return validated
@@ -465,9 +462,6 @@ If task is done, generate `final` response and stop.""",
                         self._handle_tool_call(tool_call=tool_call)
 
             except ValidationError as exc:
-                print(
-                    f"[DEBUG] Validation error string: {self._print_validation_errors(exc.errors())}"
-                )
                 self.message_history.append(
                     {
                         "role": "user",
