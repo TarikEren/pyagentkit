@@ -93,9 +93,9 @@ wheels = [
 ]
 
 [[package]]
-name = "pyagent-kit"
+name = "pyagentkit"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "ollama" },
     { name = "pydantic" },
