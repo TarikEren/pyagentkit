@@ -1,12 +1,21 @@
 import re
 import json
 import inspect
-from typing import ClassVar, Literal, Type, Union, get_args, get_origin
+from typing import (
+    ClassVar,
+    Generic,
+    Literal,
+    Type,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
 
 import ollama
 from pydantic import BaseModel, ValidationError
 from pydantic_core import ErrorDetails
-from definitions import (
+from .definitions import (
     AgentDependencies,
     AgentResponse,
     RegisteredTool,
@@ -14,20 +23,22 @@ from definitions import (
     tool_call_schema,
     ToolReturnValue,
 )
-from exceptions import (
+from .exceptions import (
     AgentExceptionError,
     AgentExceptionFatal,
     ToolExceptionError,
     ToolExceptionFatal,
 )
 
+T = TypeVar("T", bound=AgentResponse)
 
-class Agent:
+
+class Agent(Generic[T]):
     """Allows easier agent creation"""
 
     system_prompt: str
     llm_name: str
-    response_model: Type[AgentResponse]
+    response_model: Type[T]
     instructions: str | None
     agent_name: str
     message_history: list[dict[str, str]]
@@ -74,7 +85,7 @@ class Agent:
                 return [placeholder(inner[0])] if inner else []
             if annotation is dict or origin is dict:
                 return {}
-            # Nested Pydantic model — recurse
+            # Nested Pydantic model - recurse
             try:
                 if issubclass(annotation, BaseModel):
                     return _pydantic_example(annotation)
@@ -141,7 +152,7 @@ class Agent:
         system_prompt: str | None = "",
         instructions: str | None = "",
         agent_name: str | None = None,
-        response_model: Type[AgentResponse] = AgentResponse,
+        response_model: Type[T] = AgentResponse,
         num_ctx: int = 8192,
     ):
         self.system_prompt = system_prompt or ""
@@ -329,7 +340,7 @@ If task is done, generate `final` response and stop.""",
             f"[FATAL]: Agent {self.agent_name} has failed to generate successful tool call in {self.tool_retries} tries"
         )
 
-    def handle_response(self, prompt: str) -> AgentResponse:
+    def handle_response(self, prompt: str) -> T:
         response_try = 0
         # Send prompt to agent
         # print(f"[DEBUG]: System prompt: {self.message_history[0]}")
