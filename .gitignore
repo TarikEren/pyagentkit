@@ -1,10 +1,34 @@
-# Python-generated files
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.py[cod]
+*$py.class
 
-# Virtual environments
-.venv
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Distribution / Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Hatch specific
+.hatch/
+
+# Unit test / coverage reports
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+
+# OS generated files (good for team collaboration)
+.DS_Store
+Thumbs.db
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
