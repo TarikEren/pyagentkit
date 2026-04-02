@@ -41,9 +41,7 @@ agent = Agent(
     response_model=CustomOutput
 )
 
-# Easy to define tooling with decorator `register_tool`
-@agent.register_tool
-def add_tool(n1: int, n2: int):
+def sum_tool(n1: int, n2: int):
     """Adds two numbers""" # All tooling must have a one-liner docstring that defines what the function does
     # Every tool must return a `ToolResult` object
     return ToolResult(
@@ -52,8 +50,12 @@ def add_tool(n1: int, n2: int):
         content=f"Result: {n1 + n2}"              # The part which the agent will read
     )
 
+agent.add_tool(sum_tool)
+
 # Messages get printed during the response handling
 result = agent.handle_response(prompt="What is 2 + 2")
+
+# Custom output class fields can be accessed as such
 print(result.sum_result)
 
 ```
