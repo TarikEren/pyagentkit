@@ -310,9 +310,12 @@ class Agent(Generic[T]):
                 raise ToolExceptionError(
                     f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
                 )
+            params = ""
+            for param in tool_params:
+                params += f"\n{param.name}: {param.value}"
             choice = (
                 input(
-                    f"[Info] Agent {self.agent_name} wants to call tool {tool_name} with params:\n{'.'.join(param for param in tool_params)}\nAllow tool call? (Y/n): "
+                    f"[Info] Agent {self.agent_name} wants to call tool {tool_name} with params:\n{params}\nAllow tool call? (Y/n): "
                 )
                 .lower()
                 .strip()
