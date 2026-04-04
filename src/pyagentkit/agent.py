@@ -222,6 +222,9 @@ class Agent(Generic[T]):
         agent_name: str | None = None,
         response_model: Type[T] = AgentResponse,
         num_ctx: int = 8192,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        seed: int | None = None,
         ollama_url: str | None = None,
         tools: list[TypeTool] | None = None,
     ):
@@ -233,7 +236,13 @@ class Agent(Generic[T]):
         self.tool_retries = tool_retries
         self.response_retries = response_retries
         self.message_history = []
-        self.num_ctx = num_ctx
+        self.ollama_options: dict = {"num_ctx": num_ctx}
+        if temperature:
+            self.ollama_options["temperature"] = temperature
+        if top_p:
+            self.ollama_options["top_p"] = top_p
+        if seed:
+            self.ollama_options["seed"] = seed
         self.instance_tools = {}
         self.ollama_url = ollama_url
         self.ollama_client = (
@@ -435,7 +444,7 @@ If task is done, generate `final` response and stop.""",
                 response = self.ollama_client.chat(
                     model=self.llm_name,
                     messages=self.message_history,
-                    options={"num_ctx": self.num_ctx},
+                    options=self.ollama_options,
                 )
                 content = response.message.content
                 if content is None:
