@@ -53,6 +53,7 @@ class Agent(Generic[T]):
     dependencies: Type[AgentDependencies]
     num_ctx: int
     ollama_client: ollama.Client
+    max_history: int | None = None
 
     def _verify_ollama_environment(self) -> None:
         """
@@ -227,6 +228,7 @@ class Agent(Generic[T]):
         seed: int | None = None,
         ollama_url: str | None = None,
         tools: list[TypeTool] | None = None,
+        max_history: int | None = None,
     ):
         self.base_system_prompt = system_prompt or ""
         self.llm_name = llm_name
@@ -236,6 +238,8 @@ class Agent(Generic[T]):
         self.tool_retries = tool_retries
         self.response_retries = response_retries
         self.message_history = []
+        self.max_history = max_history
+
         self.ollama_options: dict = {"num_ctx": num_ctx}
         if temperature:
             self.ollama_options["temperature"] = temperature
@@ -243,12 +247,14 @@ class Agent(Generic[T]):
             self.ollama_options["top_p"] = top_p
         if seed:
             self.ollama_options["seed"] = seed
-        self.instance_tools = {}
+
         self.ollama_url = ollama_url
         self.ollama_client = (
             ollama.Client(host=self.ollama_url) if ollama_url else ollama.Client()
         )
         self._verify_ollama_environment()
+
+        self.instance_tools = {}
         if tools:
             for tool in tools:
                 self._add_tool(tool)
@@ -415,6 +421,33 @@ If task is done, generate `final` response and stop.""",
             f"[FATAL]: Agent {self.agent_name} has failed to generate successful tool call in {self.tool_retries} tries"
         )
 
+    def clear_history(self) -> None:
+        """Clear the entire message history"""
+        self.message_history = []
+
+    def save_history(self, path: str) -> None:
+        """Save the message history to the given path"""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.message_history, f, indent=2)
+        logger.info("Saved message history to %s", path)
+
+    def load_history(self, path: str) -> None:
+        """Load the message history from the given JSON file"""
+        # TODO: Requires attention, can import from random JSON files
+        with open(path, "r", encoding="utf-8") as f:
+            self.message_history = json.load(f)
+        logger.info("Loaded message history from %s", path)
+
+    def _trim_history(self) -> None:
+        """Trim the message history down if max_history param is not None"""
+        if self.max_history is None:
+            return
+        system_messages = [m for m in self.message_history if m.get("role") == "system"]
+        user_messages = [m for m in self.message_history if m.get("role") == "user"]
+        if len(user_messages) > self.max_history:
+            user_messages = user_messages[-self.max_history :]
+        self.message_history = system_messages + user_messages
+
     def handle_response(self, prompt: str, deps: AgentDependencies | None = None) -> T:
         response_try = 0
         compiled_system_prompt = f"""{self.base_system_prompt}
@@ -444,6 +477,7 @@ If task is done, generate `final` response and stop.""",
         while response_try < self.response_retries:
             logger.debug("Response try: %s", response_try)
             try:
+                self._trim_history()
                 response = self.ollama_client.chat(
                     model=self.llm_name,
                     messages=self.message_history,
