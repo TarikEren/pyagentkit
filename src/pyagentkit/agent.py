@@ -20,6 +20,7 @@ from .definitions import (
     AgentDependencies,
     AgentResponse,
     RegisteredTool,
+    TokenUsage,
     TypeTool,
     tool_call_schema,
     ToolReturnValue,
@@ -54,6 +55,7 @@ class Agent(Generic[T]):
     num_ctx: int
     ollama_client: ollama.Client
     max_history: int | None = None
+    token_usage: TokenUsage
 
     def _verify_ollama_environment(self) -> None:
         """
@@ -258,6 +260,8 @@ class Agent(Generic[T]):
         if tools:
             for tool in tools:
                 self._add_tool(tool)
+
+        self.token_usage = TokenUsage()
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
@@ -482,6 +486,13 @@ If task is done, generate `final` response and stop.""",
                     model=self.llm_name,
                     messages=self.message_history,
                     options=self.ollama_options,
+                )
+                _prompt_tokens = response.prompt_eval_count or 0
+                _response_tokens = response.eval_count or 0
+                self.token_usage += TokenUsage(
+                    prompt_tokens=_prompt_tokens,
+                    response_tokens=_response_tokens,
+                    total_tokens=_prompt_tokens + _response_tokens,
                 )
                 content = response.message.content
                 if content is None:

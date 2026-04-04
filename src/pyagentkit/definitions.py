@@ -88,3 +88,16 @@ class RegisteredCommand(BaseModel):
     accepted_args: list[str] = Field(description="Accepted arguments or flags")
     # True if non-flag args are supposed to be treated as paths
     accepts_file_path: bool = False
+
+
+class TokenUsage(BaseModel):
+    prompt_tokens: int = 0
+    response_tokens: int = 0
+    total_tokens: int = 0
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        return TokenUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            response_tokens=self.response_tokens + other.response_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+        )
