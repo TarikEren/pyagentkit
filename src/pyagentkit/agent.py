@@ -34,35 +34,69 @@ from .exceptions import (
 
 T = TypeVar("T", bound=AgentResponse)
 
-logger = logging.getLogger("pyagentkit")
-
 
 class Agent(Generic[T]):
     """Allows easier agent creation"""
 
+    # Base, plain system prompt
     base_system_prompt: str
+
+    # Name of the LLM in Ollama
     llm_name: str
+
+    # Type of response the agent will produce
     response_model: Type[T]
+
+    # Instructions to append at the end of prompts
     instructions: str | None
+
+    # Name for the agent (LLM name will be used if none provided)
     agent_name: str
+
+    # Message history for the agent to view
     message_history: list[dict[str, str]]
+
+    # Retry limit for tool calls
     tool_retries: int
+
+    # Retry limit for responses
     response_retries: int
+
+    # Tools registered to the entire class
     class_tools: ClassVar[dict[str, RegisteredTool]] = {}
+
+    # Tools registered to the instance only
     instance_tools: dict[str, RegisteredTool]
+
+    # Tool try pointer (Used in handle_response as a global handler)
     tool_try: int = 0
+
+    # Dependencies for the agent to utilize
     dependencies: Type[AgentDependencies]
+
+    # Context limit
     num_ctx: int
+
+    # Custom ollama client
     ollama_client: ollama.Client
+
+    # Past message limit
     max_history: int | None = None
+
+    # Token usage object for monitoring usage
     token_usage: TokenUsage
+
+    # Logger object for modular logging
+    logger: logging.Logger
+
+    # Agent registry for viewing what agents are registered for the class
+    _agent_registry: ClassVar[dict[str, "Agent"]] = {}
 
     def _verify_ollama_environment(self) -> None:
         """
         Checks if the Ollama server is reachable and if the llm is downloaded.
         """
         try:
-            # A simple request like list local models is a good way to verify connection
             model_list = self.ollama_client.list()
             models = []
             for entry in model_list.get("models"):
@@ -85,8 +119,10 @@ class Agent(Generic[T]):
         Handles the discriminated union (final vs tool_call) and appends
         any extra fields defined on subclasses.
         """
-        # Discover extra fields added by the subclass (e.g. test: int, sub: SubResponse)
+        # Get base fields from base response class
         base_fields = set(AgentResponse.model_fields.keys())
+
+        # Get extra fields from custom response class
         extra_fields = {
             k: v
             for k, v in self.response_model.model_fields.items()
@@ -97,7 +133,6 @@ class Agent(Generic[T]):
             """Produce a sensible placeholder for a given type annotation."""
             origin = get_origin(annotation)
             if origin is Union:
-                # Pick the first non-None arg
                 args = [a for a in get_args(annotation) if a is not type(None)]
                 return placeholder(args[0]) if args else None
             if origin is Literal:
@@ -115,7 +150,6 @@ class Agent(Generic[T]):
                 return [placeholder(inner[0])] if inner else []
             if annotation is dict or origin is dict:
                 return {}
-            # Nested Pydantic model - recurse
             try:
                 if issubclass(annotation, BaseModel):
                     return _pydantic_example(annotation)
@@ -129,7 +163,7 @@ class Agent(Generic[T]):
                 result[name] = placeholder(field.annotation)
             return result
 
-        # Build the two canonical examples
+        # Canonical examples
         tool_example = {
             "response": {
                 "type": "tool_call",
@@ -154,12 +188,12 @@ class Agent(Generic[T]):
             "## Response format",
             "You MUST respond with one of these two JSON shapes and nothing else.",
             "",
-            "When calling a tool:",
+            "- When calling a tool:",
             "```json",
             json.dumps(tool_example, indent=2),
             "```",
             "",
-            "When giving a final answer:",
+            "- When giving a final answer:",
             "```json",
             json.dumps(final_example, indent=2),
             "```",
@@ -241,17 +275,37 @@ class Agent(Generic[T]):
         ollama_url: str | None = None,
         tools: list[TypeTool] | None = None,
         max_history: int | None = None,
+        log_level: int = logging.INFO,
     ):
         self.base_system_prompt = system_prompt or ""
         self.llm_name = llm_name
         self.response_model = response_model
         self.instructions = instructions or ""
         self.agent_name = agent_name or self.llm_name
+        if self.agent_name in Agent._agent_registry.keys():
+            raise ValueError(
+                f"An agent with name `{self.agent_name}` is already registered. Use a unique agent_name or call `.dispose()` on the existing agent first. Registered agents: {list(Agent._agent_registry.keys())}"
+            )
         self.tool_retries = tool_retries
         self.response_retries = response_retries
+
         self.message_history = []
         self.max_history = max_history
 
+        # Initialize the logger with the agent name
+        self.logger = logging.getLogger(f"pyagentkit.{agent_name}")
+        self.logger.setLevel(log_level)
+
+        # Don't use root logger
+        self.logger.propagate = False
+
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(name)s | %(levelname)s | %(message)s")
+        )
+        self.logger.addHandler(handler)
+
+        # Create Ollama options dictionary
         self.ollama_options: dict = {"num_ctx": num_ctx}
         if temperature:
             self.ollama_options["temperature"] = temperature
@@ -260,20 +314,38 @@ class Agent(Generic[T]):
         if seed:
             self.ollama_options["seed"] = seed
 
+        # Create custom Ollama client
         self.ollama_url = ollama_url
         self.ollama_client = (
             ollama.Client(host=self.ollama_url) if ollama_url else ollama.Client()
         )
+
+        # Verify environment
         self._verify_ollama_environment()
 
+        # Register instance tools
         self.instance_tools = {}
         if tools:
             for tool in tools:
                 self.add_tool(tool)
 
+        # Create TokenUsage object for token monitoring
         self.token_usage = TokenUsage()
 
+        # Add the agent to the agent registry
+        Agent._agent_registry[self.agent_name] = self
+
+    def dispose(self) -> None:
+        """Unregisters the agent and cleans up its logger"""
+        Agent._agent_registry.pop(self.agent_name, None)
+        self.logger.handlers.clear()
+
+        # Detach logger from agent
+        self.logger.propagate = False
+
     def __init_subclass__(cls, **kwargs) -> None:
+        """Initializes subclasses"""
+        # Initialize class tools
         super().__init_subclass__(**kwargs)
         cls.class_tools = {}
 
@@ -320,6 +392,15 @@ class Agent(Generic[T]):
         pass
 
     def _handle_tool_call(self, tool_call: tool_call_schema) -> None:
+        """
+        Handles the provided tool call in self.tool_retries iterations
+
+        Args:
+            tool_call (tool_call_schema): The tool call to handle
+        Raises:
+            ToolExceptionError
+            ToolExceptionFatal
+        """
         all_tools = {**self.class_tools, **self.instance_tools}
         while self.tool_try < self.tool_retries:
             logging.debug("Tool call try: %s", self.tool_try)
@@ -343,7 +424,7 @@ class Agent(Generic[T]):
                     .strip()
                 )
                 if choice not in ["y", ""]:
-                    logger.info("Cancelled tool call")
+                    self.logger.info("Cancelled tool call")
                     self.message_history.append(
                         {
                             "role": "user",
@@ -383,11 +464,11 @@ class Agent(Generic[T]):
                 parts = []
                 if unknown:
                     unknown_message = f"Unknown parameters {sorted(unknown)}"
-                    logger.warning("%s", unknown_message)
+                    self.logger.warning("%s", unknown_message)
                     parts.append(unknown_message)
                 if missing:
                     missing_message = f"Missing required parameters: {sorted(missing)}"
-                    logger.warning("%s", missing_message)
+                    self.logger.warning("%s", missing_message)
                     parts.append(missing_message)
                 valid_list = [
                     f"{name}: {inspect.formatannotation(p.annotation) if p.annotation is not inspect.Parameter.empty else 'any'}"
@@ -400,7 +481,7 @@ class Agent(Generic[T]):
             try:
                 tool_return = accepted_tool.function(**kwargs)
             except TypeError as exc:
-                logger.warning(
+                self.logger.warning(
                     "Called tool `%s` with invalid arguments `%s`",
                     tool_name,
                     kwargs,
@@ -445,14 +526,14 @@ If task is done, generate `final` response and stop.""",
         """Save the message history to the given path"""
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.message_history, f, indent=2)
-        logger.info("Saved message history to %s", path)
+        self.logger.info("Saved message history to %s", path)
 
     def load_history(self, path: str) -> None:
         """Load the message history from the given JSON file"""
         # TODO: Requires attention, can import from random JSON files
         with open(path, "r", encoding="utf-8") as f:
             self.message_history = json.load(f)
-        logger.info("Loaded message history from %s", path)
+        self.logger.info("Loaded message history from %s", path)
 
     def _trim_history(self) -> None:
         """Trim the message history down if max_history param is not None"""
@@ -465,6 +546,17 @@ If task is done, generate `final` response and stop.""",
         self.message_history = system_messages + user_messages
 
     def handle_response(self, prompt: str, deps: AgentDependencies | None = None) -> T:
+        """
+        Handles response creation for agent
+
+        Args:
+            prompt (str): Prompt to work on
+            deps (AgentDependencies | None): Dependencies to use (None by default)
+        Returns:
+            T (Generic[AgentResponse]): Response object
+        Raises:
+            RuntimeError
+        """
         response_try = 0
         compiled_system_prompt = f"""{self.base_system_prompt}
 
@@ -483,7 +575,7 @@ If task is done, generate `final` response and stop.""",
 - DO NOT USE ANY NON-EXISTING TOOLS. DON'T MAKE UP TOOL NAMES.
 """
         self.current_deps = deps
-        logger.debug(
+        self.logger.debug(
             "All tooling for agent %s: %s\n",
             self.agent_name,
             str({**self.class_tools, **self.instance_tools}),
@@ -493,10 +585,15 @@ If task is done, generate `final` response and stop.""",
                 {"role": "system", "content": compiled_system_prompt}
             )
         self.message_history.append(
-            {"role": "user", "content": prompt},
+            {
+                "role": "user",
+                "content": prompt + f"\n{self.instructions}"
+                if self.instructions
+                else "",
+            },
         )
         while response_try < self.response_retries:
-            logger.debug("Response try: %s", response_try)
+            self.logger.debug("Response try: %s", response_try)
             try:
                 self._trim_history()
                 response = self.ollama_client.chat(
@@ -516,7 +613,9 @@ If task is done, generate `final` response and stop.""",
                     raise RuntimeError(
                         f"Failed to get response from agent {self.agent_name}"
                     )
-                logger.debug("Content from agent %s:\n%s", self.agent_name, content)
+                self.logger.debug(
+                    "Content from agent %s:\n%s", self.agent_name, content
+                )
 
                 # Append the assistant message because it doesn't know that it
                 # actually did anything
@@ -524,7 +623,7 @@ If task is done, generate `final` response and stop.""",
 
                 validated = self.response_model.model_validate_json(content)
 
-                logger.info("[%s]: %s", self.agent_name, validated.message)
+                self.logger.info("[%s]: %s", self.agent_name, validated.message)
                 self._validate_agent_logic(response=validated)
                 if validated.response.type == "final":
                     return validated

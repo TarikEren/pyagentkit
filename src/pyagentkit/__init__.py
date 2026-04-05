@@ -1,8 +1,6 @@
-import logging
 from .agent import Agent
 from .definitions import (
     ToolResult,
-    RegisteredCommand,
     AgentResponse,
     AgentDependencies,
     ToolReturnValue,
@@ -14,14 +12,10 @@ from .exceptions import (
     ToolExceptionFatal,
 )
 
-from .helpers import configure_logging
-
-logging.getLogger("pyagentkit").addHandler(logging.NullHandler())
 
 __all__ = [
     "Agent",
     "ToolResult",
-    "RegisteredCommand",
     "AgentResponse",
     "AgentDependencies",
     "ToolReturnValue",
@@ -29,5 +23,4 @@ __all__ = [
     "AgentExceptionFatal",
     "ToolExceptionError",
     "ToolExceptionFatal",
-    "configure_logging",
 ]

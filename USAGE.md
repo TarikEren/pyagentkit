@@ -1,17 +1,12 @@
 # How To Use Pyagentkit
 
-- Important: To configure agent logging, run `configure_logging()`
-
 ## Defining Agents
 
 - Defining a `base` agent is as easy as:
 
 ```python
 
-from pyagentkit import Agent, configure_logging
-
-configure_logging() # For logging agents' logging
-configure_logging(level=logging.DEBUG) # For logging with debugging (Useful for detecting any issues with the agents' responses)
+from pyagentkit import Agent
 
 agent = Agent(llm_name="<llm_name>")
 response = agent.handle_response(prompt="Hello, World!")
