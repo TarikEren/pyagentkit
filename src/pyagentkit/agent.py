@@ -179,7 +179,7 @@ class Agent(Generic[T]):
         return result
 
     @staticmethod
-    def _parse_tool(tool: TypeTool) -> RegisteredTool:
+    def _parse_tool(tool: TypeTool, requires_approval: bool) -> RegisteredTool:
         """Helper for parsing tools"""
         name = tool.__name__
         doc = tool.__doc__
@@ -202,18 +202,28 @@ class Agent(Generic[T]):
             desc=doc,
             need_deps=need_deps,
             deps_param=params[0].name if need_deps else None,
+            requires_approval=requires_approval,
         )
 
-    def _add_tool(self, tool: TypeTool) -> None:
-        new_tool = self._parse_tool(tool)
+    def add_tool(self, tool: TypeTool, requires_approval: bool = True) -> None:
+        new_tool = self._parse_tool(tool=tool, requires_approval=requires_approval)
         self.instance_tools[new_tool.name] = new_tool
 
     @classmethod
-    def register_tool(cls, tool: TypeTool):
+    def register_tool(
+        cls, tool: TypeTool | None = None, requires_approval: bool = True
+    ):
         """Decorator: Adds a class-wide tool"""
-        new_tool = Agent._parse_tool(tool)
-        cls.class_tools[new_tool.name] = new_tool
-        return tool
+
+        def _decorator(t: TypeTool):
+            new_tool = Agent._parse_tool(tool=t, requires_approval=requires_approval)
+            cls.class_tools[new_tool.name] = new_tool
+            return t
+
+        if tool is not None:
+            return _decorator(tool)
+
+        return _decorator
 
     def __init__(
         self,
@@ -259,7 +269,7 @@ class Agent(Generic[T]):
         self.instance_tools = {}
         if tools:
             for tool in tools:
-                self._add_tool(tool)
+                self.add_tool(tool)
 
         self.token_usage = TokenUsage()
 
@@ -312,6 +322,7 @@ class Agent(Generic[T]):
     def _handle_tool_call(self, tool_call: tool_call_schema) -> None:
         all_tools = {**self.class_tools, **self.instance_tools}
         while self.tool_try < self.tool_retries:
+            logging.debug("Tool call try: %s", self.tool_try)
             tool_name = tool_call.name
             tool_params = tool_call.params
             # Find if there is such tool registered
@@ -320,26 +331,27 @@ class Agent(Generic[T]):
                 raise ToolExceptionError(
                     f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
                 )
-            params = ""
-            for param in tool_params:
-                params += f"\n{param.name}: {param.value}"
-            choice = (
-                input(
-                    f"[Info] Agent {self.agent_name} wants to call tool {tool_name} with params:\n{params}\nAllow tool call? (Y/n): "
+            if accepted_tool.requires_approval is True:
+                params = ""
+                for param in tool_params:
+                    params += f"\n{param.name}: {param.value}"
+                choice = (
+                    input(
+                        f"[Info] Agent {self.agent_name} wants to call tool {tool_name} with params:\n{params}\nAllow tool call? (Y/n): "
+                    )
+                    .lower()
+                    .strip()
                 )
-                .lower()
-                .strip()
-            )
-            if choice not in ["y", ""]:
-                logger.info("Cancelled tool call")
-                self.message_history.append(
-                    {
-                        "role": "user",
-                        "content": f"Tool `{tool_name}` with params `{tool_params}` has been rejected by the user. Generate final response telling what the user should do in order to finish the task",
-                    }
-                )
-                self.tool_try += 1
-                return
+                if choice not in ["y", ""]:
+                    logger.info("Cancelled tool call")
+                    self.message_history.append(
+                        {
+                            "role": "user",
+                            "content": f"Tool `{tool_name}` with params `{tool_params}` has been rejected by the user. Generate final response telling what the user should do in order to finish the task",
+                        }
+                    )
+                    self.tool_try += 1
+                    return
 
             # Handle tool arguments
             kwargs = {p.name: p.value for p in tool_params}
@@ -471,6 +483,11 @@ If task is done, generate `final` response and stop.""",
 - DO NOT USE ANY NON-EXISTING TOOLS. DON'T MAKE UP TOOL NAMES.
 """
         self.current_deps = deps
+        logger.debug(
+            "All tooling for agent %s: %s\n",
+            self.agent_name,
+            str({**self.class_tools, **self.instance_tools}),
+        )
         if len(self.message_history) == 0:
             self.message_history.append(
                 {"role": "system", "content": compiled_system_prompt}

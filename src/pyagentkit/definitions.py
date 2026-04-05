@@ -77,17 +77,7 @@ class RegisteredTool(BaseModel):
     function: TypeTool
     need_deps: bool = False
     deps_param: str | None = None
-
-
-class RegisteredCommand(BaseModel):
-    """
-    Defines a command which can be called by 'execute_command'
-    """
-
-    name: str = Field(description="Name of the registered command")
-    accepted_args: list[str] = Field(description="Accepted arguments or flags")
-    # True if non-flag args are supposed to be treated as paths
-    accepts_file_path: bool = False
+    requires_approval: bool = True
 
 
 class TokenUsage(BaseModel):
