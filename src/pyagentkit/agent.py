@@ -530,9 +530,21 @@ If task is done, generate `final` response and stop.""",
 
     def load_history(self, path: str) -> None:
         """Load the message history from the given JSON file"""
-        # TODO: Requires attention, can import from random JSON files
+        acceptable_roles = ["user", "system", "assistant"]
         with open(path, "r", encoding="utf-8") as f:
-            self.message_history = json.load(f)
+            saved_data = json.load(f)
+            for entry in saved_data:
+                if (
+                    entry.get("role") not in acceptable_roles
+                    or entry.get("content") is None
+                ):
+                    self.logger.warning(
+                        "File %s contains invalid message data, failed to load messages",
+                        str(path),
+                    )
+                    return
+            self.message_history = saved_data
+
         self.logger.info("Loaded message history from %s", path)
 
     def _trim_history(self) -> None:
@@ -543,6 +555,12 @@ If task is done, generate `final` response and stop.""",
         other_messages = [m for m in self.message_history if m.get("role") != "system"]
         if len(other_messages) > self.max_history:
             other_messages = other_messages[-self.max_history :]
+
+            # If the user message preceeding the assistant message is removed (Assistant message is orphaned)
+            # remove the assistant message
+            if other_messages and other_messages[0].get("role") == "assistant":
+                other_messages = other_messages[1:]
+
         self.message_history = system_messages + other_messages
 
     def handle_response(self, prompt: str, deps: AgentDependencies | None = None) -> T:
