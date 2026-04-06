@@ -68,9 +68,6 @@ class Agent(Generic[T]):
     # Tools registered to the instance only
     instance_tools: dict[str, RegisteredTool]
 
-    # Tool try pointer (Used in handle_response as a global handler)
-    tool_try: int = 0
-
     # Dependencies for the agent to utilize
     dependencies: Type[AgentDependencies]
 
@@ -286,8 +283,8 @@ class Agent(Generic[T]):
             raise ValueError(
                 f"An agent with name `{self.agent_name}` is already registered. Use a unique agent_name or call `.dispose()` on the existing agent first. Registered agents: {list(Agent._agent_registry.keys())}"
             )
-        self.tool_retries = tool_retries
         self.response_retries = response_retries
+        self.tool_retries = tool_retries
 
         self.message_history = []
         self.max_history = max_history
@@ -391,129 +388,128 @@ class Agent(Generic[T]):
         """
         pass
 
-    def _handle_tool_call(self, tool_call: tool_call_schema) -> None:
+    def _handle_tool_call(
+        self, tool_call: tool_call_schema, deps: AgentDependencies | None
+    ) -> bool:
         """
         Handles the provided tool call in self.tool_retries iterations
 
         Args:
             tool_call (tool_call_schema): The tool call to handle
+        Returns:
+            (bool): Tool result (True on success, False on reject)
         Raises:
             ToolExceptionError
             ToolExceptionFatal
         """
         all_tools = {**self.class_tools, **self.instance_tools}
-        while self.tool_try < self.tool_retries:
-            logging.debug("Tool call try: %s", self.tool_try)
-            tool_name = tool_call.name
-            tool_params = tool_call.params
-            # Find if there is such tool registered
-            accepted_tool = all_tools.get(tool_name)
-            if accepted_tool is None:
-                raise ToolExceptionError(
-                    f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
+        tool_name = tool_call.name
+        tool_params = tool_call.params
+        # Find if there is such tool registered
+        accepted_tool = all_tools.get(tool_name)
+        if accepted_tool is None:
+            raise ToolExceptionError(
+                f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
+            )
+        if accepted_tool.requires_approval is True:
+            params = ""
+            for param in tool_params:
+                params += f"\n{param.name}: {param.value}"
+            choice = (
+                input(
+                    f"[Info] Agent {self.agent_name} wants to call tool {tool_name} with params:\n{params}\nAllow tool call? (Y/n): "
                 )
-            if accepted_tool.requires_approval is True:
-                params = ""
-                for param in tool_params:
-                    params += f"\n{param.name}: {param.value}"
-                choice = (
-                    input(
-                        f"[Info] Agent {self.agent_name} wants to call tool {tool_name} with params:\n{params}\nAllow tool call? (Y/n): "
-                    )
-                    .lower()
-                    .strip()
-                )
-                if choice not in ["y", ""]:
-                    self.logger.info("Cancelled tool call")
-                    self.message_history.append(
-                        {
-                            "role": "user",
-                            "content": f"Tool `{tool_name}` with params `{tool_params}` has been rejected by the user. Generate final response telling what the user should do in order to finish the task",
-                        }
-                    )
-                    self.tool_try += 1
-                    return
-
-            # Handle tool arguments
-            kwargs = {p.name: p.value for p in tool_params}
-            if accepted_tool.need_deps:
-                if self.current_deps is None:
-                    raise ToolExceptionFatal(
-                        f"Tool `{tool_name}` requires dependencies but none were provided to handle_response"
-                    )
-                if accepted_tool.deps_param is None:
-                    raise ToolExceptionFatal(
-                        f"Registration Error (Tool `{tool_name}` requires dependencies but has none)"
-                    )
-                kwargs[accepted_tool.deps_param] = self.current_deps
-
-            # Validate kwargs against the actual function signature
-            sig = inspect.signature(accepted_tool.function)
-            valid_params = set(sig.parameters.keys())
-            provided_params = set(kwargs.keys())
-
-            unknown = provided_params - valid_params
-            missing = {
-                name
-                for name, param in sig.parameters.items()
-                if param.default is inspect.Parameter.empty
-                and name not in provided_params
-            }
-
-            if unknown or missing:
-                parts = []
-                if unknown:
-                    unknown_message = f"Unknown parameters {sorted(unknown)}"
-                    self.logger.warning("%s", unknown_message)
-                    parts.append(unknown_message)
-                if missing:
-                    missing_message = f"Missing required parameters: {sorted(missing)}"
-                    self.logger.warning("%s", missing_message)
-                    parts.append(missing_message)
-                valid_list = [
-                    f"{name}: {inspect.formatannotation(p.annotation) if p.annotation is not inspect.Parameter.empty else 'any'}"
-                    for name, p in sig.parameters.items()
-                ]
-                parts.append(f"Valid parameters for `{tool_name}`: {valid_list}")
-                raise ToolExceptionError(". ".join(parts))
-
-            # Call tool and get return value
-            try:
-                tool_return = accepted_tool.function(**kwargs)
-            except TypeError as exc:
-                self.logger.warning(
-                    "Called tool `%s` with invalid arguments `%s`",
-                    tool_name,
-                    kwargs,
-                )
-                raise ToolExceptionError(
-                    f"Tool `{tool_name}` call failed with invalid arguments: {exc}. "
-                    f"Check parameter names and types against the tool signature."
-                )
-            tool_return_val = tool_return.return_value
-            tool_content = tool_return.content
-            if tool_return_val == ToolReturnValue.fatal:
-                raise ToolExceptionFatal(tool_content)
-            elif tool_return_val == ToolReturnValue.error:
+                .lower()
+                .strip()
+            )
+            if choice not in ["y", ""]:
+                self.logger.info("Cancelled tool call")
                 self.message_history.append(
                     {
                         "role": "user",
-                        "content": f"Tool Result: ERROR\nTool Message: {tool_content}\nRead the tool message and act accordingly",
+                        "content": f"Tool `{tool_name}` with params `{tool_params}` has been rejected by the user. Generate final response telling what the user should do in order to finish the task",
                     }
                 )
-                raise ToolExceptionError(tool_content)
-            elif tool_return_val == ToolReturnValue.success:
-                self.message_history.append(
-                    {
-                        "role": "user",
-                        "content": f"""Tool Result: SUCCESS
+                return False
+
+        # Handle tool arguments
+        kwargs = {p.name: p.value for p in tool_params}
+        if accepted_tool.need_deps:
+            if deps is None:
+                raise ToolExceptionFatal(
+                    f"Tool `{tool_name}` requires dependencies but none were provided to handle_response"
+                )
+            if accepted_tool.deps_param is None:
+                raise ToolExceptionFatal(
+                    f"Registration Error (Tool `{tool_name}` requires dependencies but has none)"
+                )
+            kwargs[accepted_tool.deps_param] = deps
+
+        # Validate kwargs against the actual function signature
+        sig = inspect.signature(accepted_tool.function)
+        valid_params = set(sig.parameters.keys())
+        provided_params = set(kwargs.keys())
+
+        unknown = provided_params - valid_params
+        missing = {
+            name
+            for name, param in sig.parameters.items()
+            if param.default is inspect.Parameter.empty and name not in provided_params
+        }
+
+        if unknown or missing:
+            parts = []
+            if unknown:
+                unknown_message = f"Unknown parameters {sorted(unknown)}"
+                self.logger.warning("%s", unknown_message)
+                parts.append(unknown_message)
+            if missing:
+                missing_message = f"Missing required parameters: {sorted(missing)}"
+                self.logger.warning("%s", missing_message)
+                parts.append(missing_message)
+            valid_list = [
+                f"{name}: {inspect.formatannotation(p.annotation) if p.annotation is not inspect.Parameter.empty else 'any'}"
+                for name, p in sig.parameters.items()
+            ]
+            parts.append(f"Valid parameters for `{tool_name}`: {valid_list}")
+            raise ToolExceptionError(". ".join(parts))
+
+        # Call tool and get return value
+        try:
+            tool_return = accepted_tool.function(**kwargs)
+        except TypeError as exc:
+            self.logger.warning(
+                "Called tool `%s` with invalid arguments `%s`",
+                tool_name,
+                kwargs,
+            )
+            raise ToolExceptionError(
+                f"Tool `{tool_name}` call failed with invalid arguments: {exc}. "
+                f"Check parameter names and types against the tool signature."
+            )
+        tool_return_val = tool_return.return_value
+        tool_content = tool_return.content
+        if tool_return_val == ToolReturnValue.fatal:
+            raise ToolExceptionFatal(tool_content)
+        elif tool_return_val == ToolReturnValue.error:
+            self.message_history.append(
+                {
+                    "role": "user",
+                    "content": f"Tool Result: ERROR\nTool Message: {tool_content}\nRead the tool message and act accordingly",
+                }
+            )
+            raise ToolExceptionError(tool_content)
+        elif tool_return_val == ToolReturnValue.success:
+            self.message_history.append(
+                {
+                    "role": "user",
+                    "content": f"""Tool Result: SUCCESS
 Tool Response: {tool_content}
 
 If task is done, generate `final` response and stop.""",
-                    }
-                )
-                self.tool_try = 0
-                return
+                }
+            )
+            return True
         raise ToolExceptionFatal(
             f"[FATAL]: Agent {self.agent_name} has failed to generate successful tool call in {self.tool_retries} tries"
         )
@@ -576,7 +572,7 @@ If task is done, generate `final` response and stop.""",
             RuntimeError
         """
         response_try = 0
-        self.tool_try = 0
+        tool_try = 0
         compiled_system_prompt = f"""{self.base_system_prompt}
 
 {self._build_schema_prompt()}
@@ -593,7 +589,6 @@ If task is done, generate `final` response and stop.""",
 - ONLY use paths that are in the format of `./target/path` or `target/path`
 - DO NOT USE ANY NON-EXISTING TOOLS. DON'T MAKE UP TOOL NAMES.
 """
-        self.current_deps = deps
         self.logger.debug(
             "All tooling for agent %s: %s\n",
             self.agent_name,
@@ -606,12 +601,12 @@ If task is done, generate `final` response and stop.""",
         self.message_history.append(
             {
                 "role": "user",
-                "content": prompt + f"\n{self.instructions}"
+                "content": f"{prompt}\n{self.instructions}"
                 if self.instructions
-                else "",
+                else prompt,
             },
         )
-        while response_try < self.response_retries:
+        while response_try < self.response_retries and tool_try < self.tool_retries:
             self.logger.debug("Response try: %s", response_try)
             try:
                 self._trim_history()
@@ -652,7 +647,8 @@ If task is done, generate `final` response and stop.""",
                     tool_call = validated.response.tool_call
                     # Check if a tool call is present in a `tool_call` typed response
                     if tool_call:
-                        self._handle_tool_call(tool_call=tool_call)
+                        self.logger.debug("Tool call try: %s", tool_try)
+                        self._handle_tool_call(tool_call=tool_call, deps=deps)
 
             except ValidationError as exc:
                 self.message_history.append(
@@ -667,11 +663,16 @@ If task is done, generate `final` response and stop.""",
                 response_try += 1
             except ToolExceptionError as exc:
                 self.message_history.append({"role": "user", "content": exc.message})
+                tool_try += 1
             except (AgentExceptionFatal, ToolExceptionFatal) as exc:
                 raise RuntimeError(exc.message)
             except Exception as exc:
                 raise RuntimeError(f"Unhandled exception: {str(exc)}")
 
+        if tool_try >= self.tool_retries:
+            raise RuntimeError(
+                f"Agent {self.agent_name} exhausted tool retries ({self.tool_retries})"
+            )
         raise RuntimeError(
-            f"[ERROR] Agent {self.agent_name} failed to provide a valid response after {self.response_retries} attempts."
+            f"Agent {self.agent_name} exhausted response retries ({self.response_retries})"
         )
