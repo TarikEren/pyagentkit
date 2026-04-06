@@ -621,7 +621,8 @@ If task is done, generate `final` response and stop.""",
                 # actually did anything
                 self.message_history.append({"role": "assistant", "content": content})
 
-                validated = self.response_model.model_validate_json(content)
+                stripped_content = self._strip_markdown_formatting(content)
+                validated = self.response_model.model_validate_json(stripped_content)
 
                 self.logger.info("[%s]: %s", self.agent_name, validated.message)
                 self._validate_agent_logic(response=validated)
