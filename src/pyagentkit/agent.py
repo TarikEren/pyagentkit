@@ -540,10 +540,10 @@ If task is done, generate `final` response and stop.""",
         if self.max_history is None:
             return
         system_messages = [m for m in self.message_history if m.get("role") == "system"]
-        user_messages = [m for m in self.message_history if m.get("role") == "user"]
-        if len(user_messages) > self.max_history:
-            user_messages = user_messages[-self.max_history :]
-        self.message_history = system_messages + user_messages
+        other_messages = [m for m in self.message_history if m.get("role") != "system"]
+        if len(other_messages) > self.max_history:
+            other_messages = other_messages[-self.max_history :]
+        self.message_history = system_messages + other_messages
 
     def handle_response(self, prompt: str, deps: AgentDependencies | None = None) -> T:
         """
