@@ -558,6 +558,7 @@ If task is done, generate `final` response and stop.""",
             RuntimeError
         """
         response_try = 0
+        self.tool_try = 0
         compiled_system_prompt = f"""{self.base_system_prompt}
 
 {self._build_schema_prompt()}
@@ -648,12 +649,9 @@ If task is done, generate `final` response and stop.""",
                 response_try += 1
             except ToolExceptionError as exc:
                 self.message_history.append({"role": "user", "content": exc.message})
-                self.tool_try += 1
             except (AgentExceptionFatal, ToolExceptionFatal) as exc:
-                self.tool_try = 0
                 raise RuntimeError(exc.message)
             except Exception as exc:
-                self.tool_try = 0
                 raise RuntimeError(f"Unhandled exception: {str(exc)}")
 
         raise RuntimeError(
