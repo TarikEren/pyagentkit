@@ -19,8 +19,13 @@ from pydantic_core import ErrorDetails
 from .definitions import (
     AgentDependencies,
     AgentResponse,
+    TypeHookOnResponse,
+    TypeHookOnResponseRetry,
+    TypeHookOnToolCall,
+    TypeHookOnToolRetry,
     RegisteredTool,
     TokenUsage,
+    TypeHookOnToolSuccess,
     TypeTool,
     tool_call_schema,
     ToolReturnValue,
@@ -88,6 +93,13 @@ class Agent(Generic[T]):
 
     # Agent registry for viewing what agents are registered for the class
     _agent_registry: ClassVar[dict[str, "Agent"]] = {}
+
+    # --- Hooks ---
+    on_tool_call: TypeHookOnToolCall | None
+    on_tool_retry: TypeHookOnToolRetry | None
+    on_tool_success: TypeHookOnToolSuccess | None
+    on_response: TypeHookOnResponse | None
+    on_response_retry: TypeHookOnResponseRetry | None
 
     def _verify_ollama_environment(self) -> None:
         """
@@ -273,6 +285,11 @@ class Agent(Generic[T]):
         tools: list[TypeTool] | None = None,
         max_history: int | None = None,
         log_level: int = logging.INFO,
+        on_tool_call: TypeHookOnToolCall | None = None,
+        on_tool_retry: TypeHookOnToolRetry | None = None,
+        on_tool_success: TypeHookOnToolSuccess | None = None,
+        on_response: TypeHookOnResponse | None = None,
+        on_response_retry: TypeHookOnResponseRetry | None = None,
     ):
         self.base_system_prompt = system_prompt or ""
         self.llm_name = llm_name
@@ -332,6 +349,13 @@ class Agent(Generic[T]):
         # Add the agent to the agent registry
         Agent._agent_registry[self.agent_name] = self
 
+        # Initialize hooks
+        self.on_tool_call = on_tool_call
+        self.on_tool_retry = on_tool_retry
+        self.on_tool_success = on_tool_success
+        self.on_response = on_response
+        self.on_response_retry = on_response_retry
+
     def dispose(self) -> None:
         """Unregisters the agent and cleans up its logger"""
         Agent._agent_registry.pop(self.agent_name, None)
@@ -388,6 +412,28 @@ class Agent(Generic[T]):
         """
         pass
 
+    def _on_tool_call(self, tool_name: str, params: dict) -> None:
+        if self.on_tool_call:
+            self.on_tool_call(tool_name, params)
+
+    def _on_tool_retry(self, tool_name: str, params: dict, error_message: str) -> None:
+        if self.on_tool_retry:
+            self.on_tool_retry(tool_name, params, error_message)
+
+    def _on_tool_success(self, tool_name: str, params: dict) -> None:
+        if self.on_tool_success:
+            self.on_tool_success(tool_name, params)
+
+    def _on_response(self, response: AgentResponse) -> None:
+        if self.on_response:
+            self.on_response(response)
+
+    def _on_response_retry(
+        self, response_try: int, response_str: str, error_message: str
+    ) -> None:
+        if self.on_response_retry:
+            self.on_response_retry(response_try, response_str, error_message)
+
     def _handle_tool_call(
         self, tool_call: tool_call_schema, deps: AgentDependencies | None
     ) -> bool:
@@ -403,11 +449,20 @@ class Agent(Generic[T]):
             ToolExceptionFatal
         """
         all_tools = {**self.class_tools, **self.instance_tools}
+
+        # Handle tool arguments
         tool_name = tool_call.name
         tool_params = tool_call.params
+        kwargs = {p.name: p.value for p in tool_params}
+
         # Find if there is such tool registered
         accepted_tool = all_tools.get(tool_name)
         if accepted_tool is None:
+            self._on_tool_retry(
+                tool_name=tool_name,
+                params=kwargs,
+                error_message=f"Tool {tool_call.name} not found",
+            )
             raise ToolExceptionError(
                 f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
             )
@@ -432,8 +487,6 @@ class Agent(Generic[T]):
                 )
                 return False
 
-        # Handle tool arguments
-        kwargs = {p.name: p.value for p in tool_params}
         if accepted_tool.need_deps:
             if deps is None:
                 raise ToolExceptionFatal(
@@ -472,9 +525,16 @@ class Agent(Generic[T]):
                 for name, p in sig.parameters.items()
             ]
             parts.append(f"Valid parameters for `{tool_name}`: {valid_list}")
-            raise ToolExceptionError(". ".join(parts))
+            invalid_param_message = ". ".join(parts)
+            self._on_tool_retry(
+                tool_name=tool_name,
+                params=kwargs,
+                error_message=invalid_param_message,
+            )
+            raise ToolExceptionError(invalid_param_message)
 
         # Call tool and get return value
+        self._on_tool_call(tool_name=tool_name, params=kwargs)
         try:
             tool_return = accepted_tool.function(**kwargs)
         except TypeError as exc:
@@ -482,6 +542,9 @@ class Agent(Generic[T]):
                 "Called tool `%s` with invalid arguments `%s`",
                 tool_name,
                 kwargs,
+            )
+            self._on_tool_retry(
+                tool_name=tool_name, params=kwargs, error_message="Invalid arguments"
             )
             raise ToolExceptionError(
                 f"Tool `{tool_name}` call failed with invalid arguments: {exc}. "
@@ -492,11 +555,15 @@ class Agent(Generic[T]):
         if tool_return_val == ToolReturnValue.fatal:
             raise ToolExceptionFatal(tool_content)
         elif tool_return_val == ToolReturnValue.error:
+            tool_result_message = f"Tool Result: ERROR\nTool Message: {tool_content}"
             self.message_history.append(
                 {
                     "role": "user",
-                    "content": f"Tool Result: ERROR\nTool Message: {tool_content}\nRead the tool message and act accordingly",
+                    "content": f"{tool_result_message}\nRead the tool message and act accordingly",
                 }
+            )
+            self._on_tool_retry(
+                tool_name=tool_name, params=kwargs, error_message=tool_result_message
             )
             raise ToolExceptionError(tool_content)
         elif tool_return_val == ToolReturnValue.success:
@@ -509,6 +576,7 @@ Tool Response: {tool_content}
 If task is done, generate `final` response and stop.""",
                 }
             )
+            self._on_tool_success(tool_name=tool_name, params=kwargs)
             return True
         raise ToolExceptionFatal(
             f"[FATAL]: Agent {self.agent_name} has failed to generate successful tool call in {self.tool_retries} tries"
@@ -577,7 +645,7 @@ If task is done, generate `final` response and stop.""",
 
 
 # Role
-You are an agent that performs tool-based tasks and returns only valid JSON.
+You are an agent that performs tool-based tasks and returns only valid JSON. Check the tools and their descriptions, call tools only if necessary.
 
 # Goal
 Complete the user task using the available tools and schemas.
@@ -628,6 +696,7 @@ Complete the user task using the available tools and schemas.
         )
         while response_try < self.response_retries and tool_try < self.tool_retries:
             self.logger.debug("Response try: %s", response_try)
+            content = ""
             try:
                 self._trim_history()
                 response = self.ollama_client.chat(
@@ -650,7 +719,6 @@ Complete the user task using the available tools and schemas.
                 self.logger.debug(
                     "Content from agent %s:\n%s", self.agent_name, content
                 )
-
                 # Append the assistant message because it doesn't know that it
                 # actually did anything
                 self.message_history.append({"role": "assistant", "content": content})
@@ -661,6 +729,7 @@ Complete the user task using the available tools and schemas.
                 self.logger.info("[%s]: %s", self.agent_name, validated.message)
                 self._validate_agent_logic(response=validated)
                 if validated.response.type == "final":
+                    self._on_response(response=validated)
                     return validated
                 if validated.response.type == "tool_call":
                     response_try = 0
@@ -671,15 +740,21 @@ Complete the user task using the available tools and schemas.
                         self._handle_tool_call(tool_call=tool_call, deps=deps)
 
             except ValidationError as exc:
-                self.message_history.append(
-                    {
-                        "role": "user",
-                        "content": self._print_validation_errors(exc.errors()),
-                    }
+                error_message = self._print_validation_errors(exc.errors())
+                self.message_history.append({"role": "user", "content": error_message})
+                self._on_response_retry(
+                    response_try=response_try,
+                    response_str=content or "None",
+                    error_message=error_message,
                 )
                 response_try += 1
             except AgentExceptionError as exc:
                 self.message_history.append({"role": "user", "content": exc.message})
+                self._on_response_retry(
+                    response_try=response_try,
+                    response_str=content or "None",
+                    error_message=exc.message,
+                )
                 response_try += 1
             except ToolExceptionError as exc:
                 self.message_history.append({"role": "user", "content": exc.message})

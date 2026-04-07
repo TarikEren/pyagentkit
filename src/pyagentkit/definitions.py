@@ -16,7 +16,8 @@ class ToolReturnValue(Enum):
     fatal = "fatal"
 
 
-type TypeTool = Callable[..., ToolResult]
+class FinalResponse(BaseModel):
+    type: Literal["final"]
 
 
 class tool_params(BaseModel):
@@ -37,10 +38,6 @@ class tool_call_schema(BaseModel):
     params: list[tool_params]
 
 
-class FinalResponse(BaseModel):
-    type: Literal["final"]
-
-
 class ToolCallResponse(BaseModel):
     type: Literal["tool_call"]
     tool_call: tool_call_schema
@@ -49,6 +46,14 @@ class ToolCallResponse(BaseModel):
 class AgentResponse(BaseModel):
     response: Union[FinalResponse, ToolCallResponse] = Field(discriminator="type")
     message: str
+
+
+type TypeTool = Callable[..., ToolResult]
+type TypeHookOnToolCall = Callable[[str, dict], None]
+type TypeHookOnToolRetry = Callable[[str, dict, str], None]
+type TypeHookOnToolSuccess = Callable[[str, dict], None]
+type TypeHookOnResponse = Callable[[AgentResponse], None]
+type TypeHookOnResponseRetry = Callable[[int, str, str], None]
 
 
 class AgentDependencies(BaseModel):
