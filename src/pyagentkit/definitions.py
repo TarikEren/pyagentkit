@@ -1,7 +1,7 @@
 """Contains enums, schemas, types and global values"""
 
 from enum import Enum
-from typing import Any, Callable, Literal, Union
+from typing import Any, Awaitable, Callable, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -48,12 +48,22 @@ class AgentResponse(BaseModel):
     message: str
 
 
+# Tool type
 type TypeTool = Callable[..., ToolResult]
+
+# Synchronous hooks
 type TypeHookOnToolCall = Callable[[str, dict], None]
 type TypeHookOnToolRetry = Callable[[str, dict, str], None]
 type TypeHookOnToolSuccess = Callable[[str, dict], None]
 type TypeHookOnResponse = Callable[[AgentResponse], None]
 type TypeHookOnResponseRetry = Callable[[int, str, str], None]
+
+# Asynchronous hooks
+type TypeAsyncHookOnToolCall = Callable[[str, dict], Awaitable[None]]
+type TypeAsyncHookOnToolSuccess = Callable[[str, dict], Awaitable[None]]
+type TypeAsyncHookOnToolRetry = Callable[[str, dict, str], Awaitable[None]]
+type TypeAsyncHookOnResponse = Callable[[AgentResponse], Awaitable[None]]
+type TypeAsyncHookOnResponseRetry = Callable[[int, str, str], Awaitable[None]]
 
 
 class AgentDependencies(BaseModel):
