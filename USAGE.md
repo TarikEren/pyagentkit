@@ -146,9 +146,9 @@ agent1.add_tool(subtraction)
 #### Tool Return Values
 | Value                       | Behaviour                                                                   |
 |-----------------------------|-----------------------------------------------------------------------------|
-| `tool_return_value.success` | Tool succeeded. `content` is fed back to the agent.                         |
-| `tool_return_value.error`   | Recoverable failure. `content` is fed back to the agent to retry or adjust. |
-| `tool_return_value.fatal`   | Unrecoverable failure. Execution stops immediately.                         |
+| `ToolReturnValue.success` | Tool succeeded. `content` is fed back to the agent.                         |
+| `ToolReturnValue.error`   | Recoverable failure. `content` is fed back to the agent to retry or adjust. |
+| `ToolReturnValue.fatal`   | Unrecoverable failure. Execution stops immediately.                         |
 
 ### Defining Tools With Dependencies
 
