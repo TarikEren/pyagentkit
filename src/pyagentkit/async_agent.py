@@ -323,6 +323,7 @@ class AsyncAgent(Generic[T]):
         on_tool_success: TypeHookOnToolSuccess | None = None,
         on_response: TypeHookOnResponse | None = None,
         on_response_retry: TypeHookOnResponseRetry | None = None,
+        think: bool = False,
     ):
         self.base_system_prompt = system_prompt or ""
         self.llm_name = llm_name
@@ -387,6 +388,8 @@ class AsyncAgent(Generic[T]):
         self.on_tool_success = on_tool_success
         self.on_response = on_response
         self.on_response_retry = on_response_retry
+
+        self.think = think
 
     @classmethod
     async def create(cls, *args, **kwargs) -> "AsyncAgent[T]":
@@ -755,6 +758,8 @@ Complete the user task using the available tools and schemas.
                     response_tokens=_response_tokens,
                     total_tokens=_prompt_tokens + _response_tokens,
                 )
+                if self.think:
+                    self.logger.info(response.message.thinking)
                 content = response.message.content
                 if content is None:
                     raise RuntimeError(
