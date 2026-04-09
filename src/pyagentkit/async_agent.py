@@ -24,14 +24,15 @@ from pydantic_core import ErrorDetails
 from .definitions import (
     AgentDependencies,
     AgentResponse,
+    ToolResult,
+    TypeAsyncTool,
     TypeHookOnResponse,
     TypeHookOnResponseRetry,
     TypeHookOnToolCall,
     TypeHookOnToolRetry,
-    RegisteredTool,
+    RegisteredAsyncTool,
     TokenUsage,
     TypeHookOnToolSuccess,
-    TypeTool,
     tool_call_schema,
     ToolReturnValue,
 )
@@ -76,10 +77,10 @@ class AsyncAgent(Generic[T]):
     response_retries: int
 
     # Tools registered to the entire class
-    class_tools: ClassVar[dict[str, RegisteredTool]] = {}
+    class_tools: ClassVar[dict[str, RegisteredAsyncTool]] = {}
 
     # Tools registered to the instance only
-    instance_tools: dict[str, RegisteredTool]
+    instance_tools: dict[str, RegisteredAsyncTool]
 
     # Dependencies for the agent to utilize
     dependencies: Type[AgentDependencies]
@@ -230,7 +231,9 @@ class AsyncAgent(Generic[T]):
         return result
 
     @staticmethod
-    def _parse_tool(tool: TypeTool, requires_approval: bool) -> RegisteredTool:
+    def _parse_tool(
+        tool: TypeAsyncTool, requires_approval: bool
+    ) -> RegisteredAsyncTool:
         """Helper for parsing tools"""
         name = tool.__name__
         doc = tool.__doc__
@@ -246,7 +249,7 @@ class AsyncAgent(Generic[T]):
             and issubclass(params[0].annotation, AgentDependencies)
         )
 
-        return RegisteredTool(
+        return RegisteredAsyncTool(
             name=name,
             signature=str(signature),
             function=tool,
@@ -256,17 +259,17 @@ class AsyncAgent(Generic[T]):
             requires_approval=requires_approval,
         )
 
-    def add_tool(self, tool: TypeTool, requires_approval: bool = True) -> None:
+    def add_tool(self, tool: TypeAsyncTool, requires_approval: bool = True) -> None:
         new_tool = self._parse_tool(tool=tool, requires_approval=requires_approval)
         self.instance_tools[new_tool.name] = new_tool
 
     @classmethod
     def register_tool(
-        cls, tool: TypeTool | None = None, requires_approval: bool = True
+        cls, tool: TypeAsyncTool | None = None, requires_approval: bool = True
     ):
         """Decorator: Adds a class-wide tool"""
 
-        def _decorator(t: TypeTool):
+        def _decorator(t: TypeAsyncTool):
             new_tool = AsyncAgent._parse_tool(
                 tool=t, requires_approval=requires_approval
             )
@@ -277,6 +280,26 @@ class AsyncAgent(Generic[T]):
             return _decorator(tool)
 
         return _decorator
+
+    def as_tool(
+        self, description: str | None = None, deps: AgentDependencies | None = None
+    ) -> TypeAsyncTool:
+        agent = self
+
+        async def run_agent(prompt: str) -> ToolResult:
+            try:
+                response = await agent.handle_response(prompt=prompt, deps=deps)
+                return ToolResult(
+                    return_value=ToolReturnValue.success, content=response.message
+                )
+            except RuntimeError as err:
+                return ToolResult(return_value=ToolReturnValue.error, content=str(err))
+
+        run_agent.__name__ = agent.agent_name
+        run_agent.__doc__ = (
+            description or f"Run agent {agent.agent_name} with the given prompt"
+        )
+        return run_agent
 
     def __init__(
         self,
@@ -292,7 +315,7 @@ class AsyncAgent(Generic[T]):
         top_p: float | None = None,
         seed: int | None = None,
         ollama_url: str | None = None,
-        tools: list[TypeTool] | None = None,
+        tools: list[TypeAsyncTool] | None = None,
         max_history: int | None = None,
         log_level: int = logging.INFO,
         on_tool_call: TypeHookOnToolCall | None = None,
@@ -405,7 +428,7 @@ class AsyncAgent(Generic[T]):
 
     def _strip_markdown_formatting(self, message: str) -> str:
         """
-        Strips the (```) from the provided message
+        Strips the (```) from the provided text
         Args:
             message (str): Message to trim
         Returns:
@@ -413,8 +436,7 @@ class AsyncAgent(Generic[T]):
         """
         raw = message.strip()
         if "```" in raw:
-            match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
-            raw = match.group(1).strip() if match else raw
+            return re.sub(r"^```.*?\\n|```$", "", raw, re.DOTALL)
         return raw
 
     def _validate_agent_logic(
@@ -552,10 +574,7 @@ class AsyncAgent(Generic[T]):
 
         await self._on_tool_call(tool_name=tool_name, params=kwargs)
         try:
-            if inspect.iscoroutinefunction(accepted_tool.function):
-                tool_return = await accepted_tool.function(**kwargs)
-            else:
-                tool_return = accepted_tool.function(**kwargs)
+            tool_return = await accepted_tool.function(**kwargs)
         except TypeError as exc:
             self.logger.warning(
                 "Called tool `%s` with invalid arguments `%s`",
@@ -678,6 +697,7 @@ Complete the user task using the available tools and schemas.
 - Do not invent tools.
 - Do not use placeholder values.
 - Use only allowed path formats.
+- Code responses must be in a single line, no markdown formatting (```) and no multiline strings (\"\"\").
 
 # Tool Rules
 - Only call tools listed here.
@@ -693,7 +713,7 @@ Complete the user task using the available tools and schemas.
 
 - Return exactly one JSON object.
 - Match the provided schema.
-- No markdown, no code fences, no extra text.
+- No markdown formatting (```), no multiline strings (\"\"\") and no extra text.
 
 # Fallback Behavior
 - If required information is missing, return a structured error JSON object.
@@ -747,6 +767,11 @@ Complete the user task using the available tools and schemas.
 
                 stripped_content = self._strip_markdown_formatting(content)
                 validated = self.response_model.model_validate_json(stripped_content)
+                validated = validated.model_copy(
+                    update={
+                        "message": self._strip_markdown_formatting(validated.message)
+                    }
+                )
 
                 self.logger.info("[%s]: %s", self.agent_name, validated.message)
                 self._validate_agent_logic(response=validated)

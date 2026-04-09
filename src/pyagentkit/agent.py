@@ -19,11 +19,12 @@ from pydantic_core import ErrorDetails
 from .definitions import (
     AgentDependencies,
     AgentResponse,
+    ToolResult,
     TypeHookOnResponse,
     TypeHookOnResponseRetry,
     TypeHookOnToolCall,
     TypeHookOnToolRetry,
-    RegisteredTool,
+    RegisteredSyncTool,
     TokenUsage,
     TypeHookOnToolSuccess,
     TypeTool,
@@ -70,10 +71,10 @@ class Agent(Generic[T]):
     response_retries: int
 
     # Tools registered to the entire class
-    class_tools: ClassVar[dict[str, RegisteredTool]] = {}
+    class_tools: ClassVar[dict[str, RegisteredSyncTool]] = {}
 
     # Tools registered to the instance only
-    instance_tools: dict[str, RegisteredTool]
+    instance_tools: dict[str, RegisteredSyncTool]
 
     # Dependencies for the agent to utilize
     dependencies: Type[AgentDependencies]
@@ -208,6 +209,7 @@ class Agent(Generic[T]):
             "```json",
             json.dumps(final_example, indent=2),
             "```",
+            "Do NOT use markdown formatting (```) when creating your responses AND messages",
         ]
 
         return "\n".join(lines)
@@ -224,7 +226,7 @@ class Agent(Generic[T]):
         return result
 
     @staticmethod
-    def _parse_tool(tool: TypeTool, requires_approval: bool) -> RegisteredTool:
+    def _parse_tool(tool: TypeTool, requires_approval: bool) -> RegisteredSyncTool:
         """Helper for parsing tools"""
         name = tool.__name__
         doc = tool.__doc__
@@ -240,7 +242,7 @@ class Agent(Generic[T]):
             and issubclass(params[0].annotation, AgentDependencies)
         )
 
-        return RegisteredTool(
+        return RegisteredSyncTool(
             name=name,
             signature=str(signature),
             function=tool,
@@ -269,6 +271,24 @@ class Agent(Generic[T]):
             return _decorator(tool)
 
         return _decorator
+
+    def as_tool(self, description: str | None, deps: AgentDependencies) -> TypeTool:
+        agent = self
+
+        def run_agent(prompt: str) -> ToolResult:
+            try:
+                response = agent.handle_response(prompt=prompt, deps=deps)
+                return ToolResult(
+                    return_value=ToolReturnValue.success, content=response.message
+                )
+            except RuntimeError as err:
+                return ToolResult(return_value=ToolReturnValue.error, content=str(err))
+
+        run_agent.__name__ = agent.agent_name
+        run_agent.__doc__ = (
+            description or f"Run agent {agent.agent_name} with the given prompt"
+        )
+        return run_agent
 
     def __init__(
         self,
@@ -309,7 +329,7 @@ class Agent(Generic[T]):
         self.max_history = max_history
 
         # Initialize the logger with the agent name
-        self.logger = logging.getLogger(f"pyagentkit.{agent_name}")
+        self.logger = logging.getLogger(f"pyagentkit.{self.agent_name}")
         self.logger.setLevel(log_level)
 
         # Don't use root logger
@@ -392,7 +412,7 @@ class Agent(Generic[T]):
 
     def _strip_markdown_formatting(self, message: str) -> str:
         """
-        Strips the (```) from the provided message
+        Strips the (```) from the provided text
         Args:
             message (str): Message to trim
         Returns:
@@ -400,8 +420,7 @@ class Agent(Generic[T]):
         """
         raw = message.strip()
         if "```" in raw:
-            match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
-            raw = match.group(1).strip() if match else raw
+            return re.sub(r"^```.*?\\n|```$", "", raw, re.DOTALL)
         return raw
 
     def _validate_agent_logic(
@@ -645,7 +664,6 @@ If task is done, generate `final` response and stop.""",
         tool_try = 0
         compiled_system_prompt = f"""{self.base_system_prompt}
 
-
 # Role
 You are an agent that performs tool-based tasks and returns only valid JSON. Check the tools and their descriptions, call tools only if necessary.
 
@@ -658,6 +676,7 @@ Complete the user task using the available tools and schemas.
 - Do not invent tools.
 - Do not use placeholder values.
 - Use only allowed path formats.
+- Code responses must be in a single line, no markdown formatting (```) and no multiline strings (\"\"\").
 
 # Tool Rules
 - Only call tools listed here.
@@ -674,16 +693,11 @@ Complete the user task using the available tools and schemas.
 - Return exactly one JSON object.
 - Match the provided schema.
 - No markdown, no code fences, no extra text.
-
+- No markdown formatting (```), no multiline strings (\"\"\") and no extra text.
 
 # Fallback Behavior
 - If required information is missing, return a structured error JSON object.
 """
-        self.logger.debug(
-            "All tooling for agent %s: %s\n",
-            self.agent_name,
-            str({**self.class_tools, **self.instance_tools}),
-        )
         if len(self.message_history) == 0:
             self.message_history.append(
                 {"role": "system", "content": compiled_system_prompt}
@@ -727,6 +741,11 @@ Complete the user task using the available tools and schemas.
 
                 stripped_content = self._strip_markdown_formatting(content)
                 validated = self.response_model.model_validate_json(stripped_content)
+                validated = validated.model_copy(
+                    update={
+                        "message": self._strip_markdown_formatting(validated.message)
+                    }
+                )
 
                 self.logger.info("[%s]: %s", self.agent_name, validated.message)
                 self._validate_agent_logic(response=validated)

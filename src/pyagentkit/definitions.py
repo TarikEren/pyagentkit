@@ -48,8 +48,9 @@ class AgentResponse(BaseModel):
     message: str
 
 
-# Tool type
+# Tool types
 type TypeTool = Callable[..., ToolResult]
+type TypeAsyncTool = Callable[..., Awaitable[ToolResult]]
 
 # Synchronous hooks
 type TypeHookOnToolCall = Callable[[str, dict], None]
@@ -84,15 +85,22 @@ class ToolResult(BaseModel):
     content: str
 
 
-class RegisteredTool(BaseModel):
+class BaseTool(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
     name: str
     signature: str
     desc: str
-    function: TypeTool
     need_deps: bool = False
     deps_param: str | None = None
     requires_approval: bool = True
+
+
+class RegisteredSyncTool(BaseTool):
+    function: TypeTool
+
+
+class RegisteredAsyncTool(BaseTool):
+    function: TypeAsyncTool
 
 
 class TokenUsage(BaseModel):
