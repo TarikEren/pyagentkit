@@ -272,7 +272,9 @@ class Agent(Generic[T]):
 
         return _decorator
 
-    def as_tool(self, description: str | None, deps: AgentDependencies) -> TypeTool:
+    def as_tool(
+        self, description: str | None, deps: AgentDependencies | None
+    ) -> TypeTool:
         agent = self
 
         def run_agent(prompt: str) -> ToolResult:
@@ -698,6 +700,11 @@ Complete the user task using the available tools and schemas.
 # Fallback Behavior
 - If required information is missing, return a structured error JSON object.
 """
+        self.logger.debug(
+            "All tooling for agent %s: %s\n",
+            self.agent_name,
+            str({**self.class_tools, **self.instance_tools}),
+        )
         if len(self.message_history) == 0:
             self.message_history.append(
                 {"role": "system", "content": compiled_system_prompt}
@@ -747,7 +754,6 @@ Complete the user task using the available tools and schemas.
                     }
                 )
 
-                self.logger.info("[%s]: %s", self.agent_name, validated.message)
                 self._validate_agent_logic(response=validated)
                 if validated.response.type == "final":
                     self._on_response(response=validated)
