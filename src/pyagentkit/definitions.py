@@ -1,4 +1,4 @@
-"""Contains enums, schemas, types and global values"""
+# src/pyagentkit/definitions.py
 
 from enum import Enum
 from typing import Any, Awaitable, Callable, Literal, Union
@@ -73,8 +73,6 @@ class AgentDependencies(BaseModel):
     inherit from.
     """
 
-    prompt: str = Field(description="The prompt to be used")
-
 
 class ToolResult(BaseModel):
     """
@@ -100,7 +98,7 @@ class RegisteredSyncTool(BaseTool):
 
 
 class RegisteredAsyncTool(BaseTool):
-    function: TypeAsyncTool
+    function: TypeAsyncTool | TypeTool
 
 
 class TokenUsage(BaseModel):
