@@ -2,18 +2,22 @@
 # async. Mostly the same as `agent.py`. Creating a rather complex class with shared functionality
 # isn't really worth it for 2 classes.
 
+# src/pyagentkit/async_agent.py
+
 import re
 import json
 import logging
 import inspect
 import asyncio
 from typing import (
+    Callable,
     ClassVar,
     Generic,
     Literal,
     Type,
     TypeVar,
     Union,
+    cast,
     get_args,
     get_origin,
 )
@@ -37,10 +41,17 @@ from .definitions import (
     ToolReturnValue,
 )
 from .exceptions import (
-    AgentExceptionError,
-    AgentExceptionFatal,
-    ToolExceptionError,
-    ToolExceptionFatal,
+    ExceptionAgentError,
+    ExceptionAgentFatal,
+    ExceptionEnvironmentError,
+    ExceptionFatalError,
+    ExceptionInvalidTool,
+    ExceptionResponseRetriesExhausted,
+    ExceptionToolError,
+    ExceptionToolFatal,
+    ExceptionToolRetriesExhausted,
+    ExceptionUnhandledError,
+    PyAgentKitError,
 )
 
 
@@ -120,15 +131,13 @@ class AsyncAgent(Generic[T]):
             for entry in model_list.get("models"):
                 models.append(entry.get("model"))
             if self.llm_name not in models:
-                raise RuntimeError(
-                    f"Model {self.llm_name} not found locally",
-                    f"Run `ollama pull {self.llm_name}` to install `{self.llm_name}`",
+                raise ExceptionEnvironmentError(
+                    f"Model {self.llm_name} not found locally. Run `ollama pull {self.llm_name}` to install `{self.llm_name}`",
                 )
 
         except ConnectionError as e:
-            raise RuntimeError(
-                f"Failed connecting to Ollama: {e}.",
-                "Please ensure Ollama is running and the host address is correct",
+            raise ExceptionEnvironmentError(
+                f"Failed connecting to Ollama: {e}. Please ensure Ollama is running and the host address is correct",
             )
 
     def _build_schema_prompt(self) -> str:
@@ -215,6 +224,7 @@ class AsyncAgent(Generic[T]):
             "```json",
             json.dumps(final_example, indent=2),
             "```",
+            "Do NOT use markdown formatting (```) when creating your responses AND messages",
         ]
 
         return "\n".join(lines)
@@ -238,7 +248,7 @@ class AsyncAgent(Generic[T]):
         name = tool.__name__
         doc = tool.__doc__
         if doc is None:
-            raise RuntimeError(f"Tool `{name}` has no docstring")
+            raise ExceptionInvalidTool(f"Tool `{name}` has no docstring")
 
         signature = inspect.signature(tool)
         params = list(signature.parameters.values())
@@ -282,7 +292,7 @@ class AsyncAgent(Generic[T]):
         return _decorator
 
     def as_tool(
-        self, description: str | None = None, deps: AgentDependencies | None = None
+        self, description: str, deps: AgentDependencies | None = None
     ) -> TypeAsyncTool:
         agent = self
 
@@ -292,7 +302,7 @@ class AsyncAgent(Generic[T]):
                 return ToolResult(
                     return_value=ToolReturnValue.success, content=response.message
                 )
-            except RuntimeError as err:
+            except PyAgentKitError as err:
                 return ToolResult(return_value=ToolReturnValue.error, content=str(err))
 
         run_agent.__name__ = agent.agent_name
@@ -323,6 +333,7 @@ class AsyncAgent(Generic[T]):
         on_tool_success: TypeHookOnToolSuccess | None = None,
         on_response: TypeHookOnResponse | None = None,
         on_response_retry: TypeHookOnResponseRetry | None = None,
+        on_validate: Callable[[AgentResponse], None] | None = None,
         think: bool = False,
     ):
         self.base_system_prompt = system_prompt or ""
@@ -331,9 +342,7 @@ class AsyncAgent(Generic[T]):
         self.instructions = instructions or ""
         self.agent_name = agent_name or self.llm_name
         if self.agent_name in AsyncAgent._agent_registry.keys():
-            raise ValueError(
-                f"An agent with name `{self.agent_name}` is already registered. Use a unique agent_name or call `.dispose()` on the existing agent first. Registered agents: {list(AsyncAgent._agent_registry.keys())}"
-            )
+            self.agent_name = f"{self.agent_name}-{len(AsyncAgent._agent_registry)}"
         self.response_retries = response_retries
         self.tool_retries = tool_retries
 
@@ -341,7 +350,7 @@ class AsyncAgent(Generic[T]):
         self.max_history = max_history
 
         # Initialize the logger with the agent name
-        self.logger = logging.getLogger(f"pyagentkit.{agent_name}")
+        self.logger = logging.getLogger(f"pyagentkit.{self.agent_name}")
         self.logger.setLevel(log_level)
 
         # Don't use root logger
@@ -352,6 +361,11 @@ class AsyncAgent(Generic[T]):
             logging.Formatter("%(name)s | %(levelname)s | %(message)s")
         )
         self.logger.addHandler(handler)
+        self.logger.warning(
+            "AsyncAgent '%s' created directly via __init__. "
+            "Call `await AsyncAgent.create(...)` to validate the Ollama environment.",
+            self.agent_name,
+        )
 
         # Create Ollama options dictionary
         self.ollama_options: dict = {"num_ctx": num_ctx}
@@ -388,6 +402,7 @@ class AsyncAgent(Generic[T]):
         self.on_tool_success = on_tool_success
         self.on_response = on_response
         self.on_response_retry = on_response_retry
+        self.on_validate = on_validate
 
         self.think = think
 
@@ -442,7 +457,7 @@ class AsyncAgent(Generic[T]):
             return re.sub(r"^```.*?\\n|```$", "", raw, re.DOTALL)
         return raw
 
-    def _validate_agent_logic(
+    async def _on_validate(
         self,
         response: AgentResponse,
     ) -> None:
@@ -450,34 +465,50 @@ class AsyncAgent(Generic[T]):
         Hook for validating agent-specific logic
         Raise AgentExceptionError on fail
         """
-        # TODO: It might be reasonable to make it so that
-        # this runs a custom function as well like the
-        # hooks below.
-        pass
+        if self.on_validate:
+            if inspect.iscoroutinefunction(self.on_validate):
+                await self.on_validate(response)
+            else:
+                self.on_validate(response)
 
     async def _on_tool_call(self, tool_name: str, params: dict) -> None:
         if self.on_tool_call:
-            self.on_tool_call(tool_name, params)
+            if inspect.iscoroutinefunction(self.on_tool_call):
+                await self.on_tool_call(tool_name, params)
+            else:
+                self.on_tool_call(tool_name, params)
 
     async def _on_tool_retry(
         self, tool_name: str, params: dict, error_message: str
     ) -> None:
         if self.on_tool_retry:
-            self.on_tool_retry(tool_name, params, error_message)
+            if inspect.iscoroutinefunction(self.on_tool_retry):
+                await self.on_tool_retry(tool_name, params, error_message)
+            else:
+                self.on_tool_retry(tool_name, params, error_message)
 
     async def _on_tool_success(self, tool_name: str, params: dict) -> None:
         if self.on_tool_success:
-            self.on_tool_success(tool_name, params)
+            if inspect.iscoroutinefunction(self.on_tool_success):
+                await self.on_tool_success(tool_name, params)
+            else:
+                self.on_tool_success(tool_name, params)
 
     async def _on_response(self, response: AgentResponse) -> None:
         if self.on_response:
-            self.on_response(response)
+            if inspect.iscoroutinefunction(self.on_response):
+                await self.on_response(response)
+            else:
+                self.on_response(response)
 
     async def _on_response_retry(
         self, response_try: int, response_str: str, error_message: str
     ) -> None:
         if self.on_response_retry:
-            self.on_response_retry(response_try, response_str, error_message)
+            if inspect.iscoroutinefunction(self.on_response_retry):
+                await self.on_response_retry(response_try, response_str, error_message)
+            else:
+                self.on_response_retry(response_try, response_str, error_message)
 
     async def _handle_tool_call(
         self, tool_call: tool_call_schema, deps: AgentDependencies | None
@@ -507,7 +538,7 @@ class AsyncAgent(Generic[T]):
                 params=kwargs,
                 error_message=f"Tool {tool_call.name} not found",
             )
-            raise ToolExceptionError(
+            raise ExceptionToolError(
                 f"Tool `{tool_call.name}` not found, check the tool name and respond with a valid tool name",
             )
 
@@ -534,11 +565,11 @@ class AsyncAgent(Generic[T]):
 
         if accepted_tool.need_deps:
             if deps is None:
-                raise ToolExceptionFatal(
+                raise ExceptionToolFatal(
                     f"Tool `{tool_name}` requires dependencies but none were provided to handle_response"
                 )
             if accepted_tool.deps_param is None:
-                raise ToolExceptionFatal(
+                raise ExceptionToolFatal(
                     f"Registration Error (Tool `{tool_name}` requires dependencies but has none)"
                 )
             kwargs[accepted_tool.deps_param] = deps
@@ -573,11 +604,14 @@ class AsyncAgent(Generic[T]):
             await self._on_tool_retry(
                 tool_name=tool_name, params=kwargs, error_message=full_error
             )
-            raise ToolExceptionError(full_error)
+            raise ExceptionToolError(full_error)
 
         await self._on_tool_call(tool_name=tool_name, params=kwargs)
         try:
-            tool_return = await accepted_tool.function(**kwargs)
+            if inspect.iscoroutinefunction(accepted_tool.function):
+                tool_return = cast(ToolResult, await accepted_tool.function(**kwargs))
+            else:
+                tool_return = cast(ToolResult, accepted_tool.function(**kwargs))
         except TypeError as exc:
             self.logger.warning(
                 "Called tool `%s` with invalid arguments `%s`",
@@ -587,7 +621,7 @@ class AsyncAgent(Generic[T]):
             await self._on_tool_retry(
                 tool_name=tool_name, params=kwargs, error_message="Invalid arguments"
             )
-            raise ToolExceptionError(
+            raise ExceptionToolError(
                 f"Tool `{tool_name}` call failed with invalid arguments: {exc}. "
                 f"Check parameter names and types against the tool signature."
             )
@@ -595,7 +629,7 @@ class AsyncAgent(Generic[T]):
         tool_return_val = tool_return.return_value
         tool_content = tool_return.content
         if tool_return_val == ToolReturnValue.fatal:
-            raise ToolExceptionFatal(tool_content)
+            raise ExceptionToolFatal(tool_content)
         elif tool_return_val == ToolReturnValue.error:
             tool_result_message = f"Tool Result: ERROR\nTool Message: {tool_content}"
             self.message_history.append(
@@ -607,20 +641,20 @@ class AsyncAgent(Generic[T]):
             await self._on_tool_retry(
                 tool_name=tool_name, params=kwargs, error_message=tool_result_message
             )
-            raise ToolExceptionError(tool_content)
+            raise ExceptionToolError(tool_content)
         elif tool_return_val == ToolReturnValue.success:
             self.message_history.append(
                 {
                     "role": "user",
                     "content": f"""Tool Result: SUCCESS
-    Tool Response: {tool_content}
+Tool Response: {tool_content}
 
     If task is done, generate `final` response and stop.""",
                 }
             )
             await self._on_tool_success(tool_name=tool_name, params=kwargs)
             return True
-        raise ToolExceptionFatal(
+        raise ExceptionToolFatal(
             f"[FATAL]: Agent {self.agent_name} has failed to generate a successful tool call"
         )
 
@@ -680,8 +714,6 @@ class AsyncAgent(Generic[T]):
             deps (AgentDependencies | None): Dependencies to use (None by default)
         Returns:
             T (Generic[AgentResponse]): Response object
-        Raises:
-            RuntimeError
         """
         response_try = 0
         tool_try = 0
@@ -739,17 +771,16 @@ Complete the user task using the available tools and schemas.
             },
         )
 
-        ollama_client = ollama.AsyncClient(host=self.ollama_url)
-
         while response_try < self.response_retries and tool_try < self.tool_retries:
             content = ""
             self.logger.debug("Response try: %s", response_try)
             try:
                 self._trim_history()
-                response = await ollama_client.chat(
+                response = await self.ollama_client.chat(
                     model=self.llm_name,
                     messages=self.message_history,
                     options=self.ollama_options,
+                    think=self.think,
                 )
                 _prompt_tokens = response.prompt_eval_count or 0
                 _response_tokens = response.eval_count or 0
@@ -758,7 +789,7 @@ Complete the user task using the available tools and schemas.
                     response_tokens=_response_tokens,
                     total_tokens=_prompt_tokens + _response_tokens,
                 )
-                if self.think:
+                if self.think and response.message.thinking:
                     self.logger.info(response.message.thinking)
                 content = response.message.content
                 if content is None:
@@ -778,8 +809,7 @@ Complete the user task using the available tools and schemas.
                     }
                 )
 
-                self.logger.info("[%s]: %s", self.agent_name, validated.message)
-                self._validate_agent_logic(response=validated)
+                await self._on_validate(response=validated)
                 if validated.response.type == "final":
                     await self._on_response(response=validated)
                     return validated
@@ -789,6 +819,7 @@ Complete the user task using the available tools and schemas.
                     if tool_call:
                         self.logger.debug("Tool call try: %s", tool_try)
                         await self._handle_tool_call(tool_call=tool_call, deps=deps)
+                        tool_try = 0
 
             except ValidationError as exc:
                 error_message = self._print_validation_errors(exc.errors())
@@ -799,7 +830,7 @@ Complete the user task using the available tools and schemas.
                     error_message=error_message,
                 )
                 response_try += 1
-            except AgentExceptionError as exc:
+            except ExceptionAgentError as exc:
                 self.message_history.append({"role": "user", "content": exc.message})
                 await self._on_response_retry(
                     response_try=response_try,
@@ -807,18 +838,18 @@ Complete the user task using the available tools and schemas.
                     error_message=exc.message,
                 )
                 response_try += 1
-            except ToolExceptionError as exc:
+            except ExceptionToolError as exc:
                 self.message_history.append({"role": "user", "content": exc.message})
                 tool_try += 1
-            except (AgentExceptionFatal, ToolExceptionFatal) as exc:
-                raise RuntimeError(exc.message)
+            except (ExceptionAgentFatal, ExceptionToolFatal) as exc:
+                raise ExceptionFatalError(exc.message)
             except Exception as exc:
-                raise RuntimeError(f"Unhandled exception: {str(exc)}")
+                raise ExceptionUnhandledError(f"Unhandled exception: {str(exc)}")
 
         if tool_try >= self.tool_retries:
-            raise RuntimeError(
-                f"Agent {self.agent_name} exhausted tool retries ({self.tool_retries})"
+            raise ExceptionToolRetriesExhausted(
+                agent_name=self.agent_name, retries=self.tool_retries
             )
-        raise RuntimeError(
-            f"Agent {self.agent_name} exhausted response retries ({self.response_retries})"
+        raise ExceptionResponseRetriesExhausted(
+            agent_name=self.agent_name, retries=self.response_retries
         )
