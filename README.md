@@ -25,7 +25,7 @@ A Python library for building tool-calling agents on top of locally-hosted LLMs 
 
 - Python 3.12+
 - [Ollama](https://ollama.com) running locally (or at a reachable URL)
-- A model pulled in Ollama (e.g. `ollama pull llama3.2`)
+- A model pulled in Ollama
 
 ---
 
