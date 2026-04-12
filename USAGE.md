@@ -25,7 +25,7 @@
 from pyagentkit import Agent
 
 agent = Agent(
-    llm_name="llama3.2",          # Must be pulled in Ollama
+    llm_name="<llm_name>",          # Must be pulled in Ollama
     system_prompt="You are a helpful assistant.",
     agent_name="my-agent",
 )
@@ -72,7 +72,7 @@ def divide(a: float, b: float) -> ToolResult:
 
 ```python
 agent = Agent(
-    llm_name="llama3.2",
+    llm_name="<llm_name>",
     tools=[add_numbers, divide],  # registered without approval requirement
 )
 ```
@@ -92,7 +92,7 @@ agent.add_tool(add_numbers, requires_approval=False)
 Registered on a single agent instance. Use `add_tool` or pass `tools=` to the constructor.
 
 ```python
-agent = Agent(llm_name="llama3.2")
+agent = Agent(llm_name="<llm_name>")
 agent.add_tool(my_tool, requires_approval=False)
 ```
 
@@ -115,8 +115,8 @@ def get_time() -> ToolResult:
     )
 
 
-agent_a = MyAgent(llm_name="llama3.2")
-agent_b = MyAgent(llm_name="llama3.2", agent_name="second")
+agent_a = MyAgent(llm_name="<llm_name>")
+agent_b = MyAgent(llm_name="<llm_name>", agent_name="second")
 # Both agents can call get_time
 ```
 
@@ -146,7 +146,7 @@ def fetch_user(deps: MyDeps, user_id: str) -> ToolResult:
 
 deps = MyDeps(prompt="Find user 42", db_url="postgresql://...", api_key="sk-...")
 
-agent = Agent(llm_name="llama3.2", tools=[fetch_user])
+agent = Agent(llm_name="<llm_name>", tools=[fetch_user])
 response = agent.handle_response("Find user 42", deps=deps)
 ```
 
@@ -169,7 +169,7 @@ class SentimentResponse(AgentResponse):
 
 
 agent = Agent(
-    llm_name="llama3.2",
+    llm_name="<llm_name>",
     response_model=SentimentResponse,
     system_prompt="You are a sentiment analysis assistant.",
 )
@@ -201,7 +201,7 @@ async def get_weather(city: str) -> ToolResult:
 
 async def main():
     agent = await AsyncAgent.create(
-        llm_name="llama3.2",
+        llm_name="<llm_name>",
         tools=[get_weather],
         agent_name="weather-agent",
     )
@@ -246,7 +246,7 @@ def on_response_retry(attempt: int, response_str: str, error: str) -> None:
 
 
 agent = Agent(
-    llm_name="llama3.2",
+    llm_name="<llm_name>",
     on_tool_call=on_tool_call,
     on_tool_retry=on_tool_retry,
     on_tool_success=on_tool_success,
@@ -268,14 +268,14 @@ from pyagentkit.definitions import ToolResult, ToolReturnValue
 
 # Inner specialist agent
 researcher = Agent(
-    llm_name="llama3.2",
+    llm_name="<llm_name>",
     agent_name="researcher",
     system_prompt="You are a research specialist. Answer factual questions concisely.",
 )
 
 # Outer orchestrator agent
 orchestrator = Agent(
-    llm_name="llama3.2",
+    llm_name="<llm_name>",
     agent_name="orchestrator",
     system_prompt="You are an orchestrator. Delegate research tasks to the researcher agent.",
     tools=[researcher.as_tool(description="Ask the researcher agent a factual question.")],
@@ -294,7 +294,7 @@ print(response.message)
 History is maintained automatically within a session. Each call to `handle_response` appends to the same history, giving the agent memory of prior turns.
 
 ```python
-agent = Agent(llm_name="llama3.2", agent_name="chat-agent")
+agent = Agent(llm_name="<llm_name>", agent_name="chat-agent")
 
 r1 = agent.handle_response("My name is Alice.")
 r2 = agent.handle_response("What is my name?")
@@ -306,7 +306,7 @@ print(r2.message)  # "Your name is Alice."
 Set `max_history` to limit how many non-system messages the agent sees. Older messages are dropped automatically. Orphaned assistant messages (those without a preceding user message after trimming) are also removed.
 
 ```python
-agent = Agent(llm_name="llama3.2", max_history=20)
+agent = Agent(llm_name="<llm_name>", max_history=20)
 ```
 
 ### Saving and loading history
@@ -386,7 +386,7 @@ def risky_tool(path: str) -> ToolResult:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `llm_name` | `str` | required | Ollama model name (e.g. `"llama3.2"`) |
+| `llm_name` | `str` | required | Ollama model name (e.g. `"devstral:22b"`) |
 | `agent_name` | `str \| None` | `llm_name` | Unique name for this agent instance |
 | `system_prompt` | `str \| None` | `""` | Base system prompt prepended to all requests |
 | `instructions` | `str \| None` | `""` | Text appended to every user prompt |
@@ -411,7 +411,7 @@ def risky_tool(path: str) -> ToolResult:
 ### Agent lifecycle
 
 ```python
-agent = Agent(llm_name="llama3.2", agent_name="my-agent")
+agent = Agent(llm_name="<llm_name>", agent_name="my-agent")
 
 # Use the agent ...
 
